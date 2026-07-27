@@ -1,17 +1,67 @@
-/** File→EXIF回転適用+長辺maxEdgeへ縮小したcanvas。 */
-export async function loadAsCanvas(file: File, maxEdge = 1600): Promise<HTMLCanvasElement> {
+/** width/heightを長辺maxEdgeへ縮小したcanvasへimageを描画する。 */
+function drawScaled(
+  image: CanvasImageSource,
+  width: number,
+  height: number,
+  maxEdge: number,
+): HTMLCanvasElement {
+  const scale = Math.min(1, maxEdge / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2D context unavailable");
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/** File→EXIF回転適用+長辺maxEdgeへ縮小したcanvas(createImageBitmap経路)。 */
+async function loadViaImageBitmap(file: File, maxEdge: number): Promise<HTMLCanvasElement> {
   const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   try {
-    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(bitmap.width * scale);
-    canvas.height = Math.round(bitmap.height * scale);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("2D context unavailable");
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    return canvas;
+    return drawScaled(bitmap, bitmap.width, bitmap.height, maxEdge);
   } finally {
     bitmap.close();
+  }
+}
+
+/**
+ * File→EXIF回転適用+長辺maxEdgeへ縮小したcanvas(HTMLImageElement経路)。
+ *
+ * `createImageBitmap(file, { imageOrientation: "from-image" })` の失敗時フォールバック。
+ * `<img>` はEXIF Orientationをブラウザが解釈して描画するため、回転適用の代替になる。
+ */
+async function loadViaImageElement(file: File, maxEdge: number): Promise<HTMLCanvasElement> {
+  const url = URL.createObjectURL(file);
+  const image = new Image();
+  try {
+    image.src = url;
+    await image.decode();
+    return drawScaled(image, image.naturalWidth, image.naturalHeight, maxEdge);
+  } finally {
+    image.src = "";
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * File→EXIF回転適用+長辺maxEdgeへ縮小したcanvas。
+ *
+ * `createImageBitmap(..., { imageOrientation: "from-image" })` を優先するが、
+ * 最低対応iOSバージョンが未定義のため(Safari 17.2より前は同等の挙動が別の
+ * 列挙値で実装されていた)、失敗時は `HTMLImageElement` 経由のフォールバックに切り替える。
+ */
+export async function loadAsCanvas(file: File, maxEdge = 1600): Promise<HTMLCanvasElement> {
+  try {
+    return await loadViaImageBitmap(file, maxEdge);
+  } catch (bitmapError) {
+    try {
+      return await loadViaImageElement(file, maxEdge);
+    } catch (fallbackError) {
+      throw new Error("画像の読み込みに失敗しました(createImageBitmap/Imageともに失敗)", {
+        cause: { bitmapError, fallbackError },
+      });
+    }
   }
 }
 
@@ -20,7 +70,8 @@ export function enhanceContrast(src: HTMLCanvasElement): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = src.width;
   canvas.height = src.height;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2D context unavailable");
   ctx.drawImage(src, 0, 0);
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const d = img.data;

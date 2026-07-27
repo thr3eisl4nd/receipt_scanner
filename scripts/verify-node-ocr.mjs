@@ -86,7 +86,7 @@ async function main() {
   console.log(`recognize() done in ${ms}ms, raw results:`);
   console.log(JSON.stringify(result.results, null, 2));
 
-  const ocrLines = mapToOcrLines(result.results);
+  const ocrLines = mapToOcrLines(result.results, { width: canvas.width, height: canvas.height });
   console.log("\nmapToOcrLines() output (OcrLine[]):");
   console.log(JSON.stringify(ocrLines, null, 2));
 

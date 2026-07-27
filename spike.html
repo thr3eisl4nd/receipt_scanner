@@ -7,7 +7,10 @@
     <style>
       body { font-family: sans-serif; margin: 12px; }
       .result { border: 1px solid #ccc; margin: 8px 0; padding: 8px; }
-      .ok { background: #e6ffe6; } .ng { background: #fff3e0; }
+      /* .ok: auto-high(手修正不要)のみ緑。.warn: needs-review/failed(要手修正)は注意色。.ng: 例外発生。 */
+      .ok { background: #e6ffe6; }
+      .warn { background: #fff3e0; }
+      .ng { background: #ffe0e0; }
       pre { white-space: pre-wrap; font-size: 12px; }
     </style>
   </head>
