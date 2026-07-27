@@ -39,4 +39,19 @@ describe("findMoneyTokens", () => {
   test("桁が少なすぎる断片も金額として拾う(1桁も可)", () => {
     expect(findMoneyTokens("合計 8円")).toEqual([8]);
   });
+  test("区切りなしの4桁以上の金額を分割しない", () => {
+    expect(findMoneyTokens("合計 1332円")).toEqual([1332]);
+    expect(findMoneyTokens("¥1234")).toEqual([1234]);
+  });
+  test("日付・電話番号など数値以外の文脈は境界チェックで除外する", () => {
+    expect(findMoneyTokens("2026-07-27")).toEqual([]);
+    expect(findMoneyTokens("TEL 03-1234-5678")).toEqual([]);
+    expect(findMoneyTokens("No.12345678901")).toEqual([]); // 英数字隣接は不採用
+  });
+  test("空白区切りは¥/円が伴う場合のみ結合する", () => {
+    expect(findMoneyTokens("合計 ¥1 332")).toEqual([1332]);
+  });
+  test("%除外は直後の空白を許容する", () => {
+    expect(findMoneyTokens("10 %対象 550")).toEqual([550]);
+  });
 });

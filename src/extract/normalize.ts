@@ -19,18 +19,52 @@ export function normalizeMoneyToken(token: string): number | null {
 /**
  * 行テキストから金額候補をすべて抽出する。
  *
- * 数値グループは「先頭1〜3桁 + (区切り + 3桁)の繰り返し」に限定することで、
- * "550 10%対象" のような無関係な数値が空白でくっついて誤結合するのを防ぐ
- * (桁区切りとしての空白/カンマは常に3桁区切りであるため)。
- * また、直後に "%" が続く数値(税率表記 "8%対象" 等)は金額候補から除外する。
+ * 数値本体は3パターンの択一:
+ *   1. カンマ区切り: 先頭1〜3桁 + ("," + 3桁) を1回以上
+ *   2. 空白区切り: 先頭1〜3桁 + (半角空白/タブ + 3桁) を1回以上。
+ *      ただし桁区切りとしての空白は ¥/円 のいずれかが伴う場合に限る
+ *      ("550 10%対象" のような無関係な数値の誤結合を防ぐため)。
+ *      改行等を含む \s ではなく [ \t] のみを区切りとして許容する。
+ *   3. 区切りなし: 桁数制限のない連続数字("1332円" のような4桁以上の
+ *      カンマなし金額もそのまま1トークンとして拾う)。
+ *
+ * マッチの直前・直後の文字が英数字/ピリオド/カンマ/ハイフンの場合は、
+ * 日付("2026-07-27")や電話番号("03-1234-5678")、コード("No.123...")
+ * などの部分マッチとみなして不採用にする。ここで見る前後の文字は
+ * マッチ全体(先頭の▲/-や末尾の-/ー/−を含む)の外側であり、マッチ自身が
+ * 消費したそれらの符号文字自体を前後判定の対象にすることはない。
+ * また、直後に(空白を1つ挟んでもよい)"%" が続く数値(税率表記)は
+ * 金額候補から除外する。
  */
 export function findMoneyTokens(text: string): number[] {
-  const re = /[▲-]?[¥￥]?[0-9OoIl|]{1,3}(?:[,\s][0-9OoIl|]{3})*(?:円)?[-ー−]?/g;
+  const D = "[0-9OoIl|]";
+  const digit13 = `${D}{1,3}`;
+  const digit3 = `${D}{3}`;
+  const cur = "[¥￥]";
+  // 1. カンマ区切り(円は前後どちらでも任意)
+  const commaBody = `${cur}?${digit13}(?:,${digit3})+円?`;
+  // 2a. ¥prefixあり + 空白区切り(円は任意)
+  const spaceBodyWithPrefix = `${cur}${digit13}(?:[ \\t]${digit3})+円?`;
+  // 2b. ¥prefixなし + 空白区切り + 円は必須
+  const spaceBodyWithSuffix = `${digit13}(?:[ \\t]${digit3})+円`;
+  // 3. 区切りなし(桁数無制限)
+  const bareBody = `${cur}?${D}+円?`;
+  const re = new RegExp(
+    `[▲-]?(?:(?:${commaBody})|(?:${spaceBodyWithPrefix})|(?:${spaceBodyWithSuffix})|(?:${bareBody}))[-ー−]?`,
+    "g",
+  );
+  const boundary = /[0-9A-Za-z.,-]/;
   const normalized = text.normalize("NFKC");
   const out: number[] = [];
   for (const m of normalized.matchAll(re)) {
-    const nextChar = normalized[m.index + m[0].length];
-    if (nextChar === "%") continue;
+    const start = m.index;
+    const end = start + m[0].length;
+    const before = start > 0 ? normalized[start - 1] : undefined;
+    const after = end < normalized.length ? normalized[end] : undefined;
+    if ((before !== undefined && boundary.test(before)) || (after !== undefined && boundary.test(after))) {
+      continue;
+    }
+    if (/^[ \t]?%/.test(normalized.slice(end))) continue;
     const v = normalizeMoneyToken(m[0].trim());
     if (v !== null) out.push(v);
   }
