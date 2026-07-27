@@ -9,7 +9,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: "index.html",
-        spike: "spike.html", // Task 4で追加(それまで空のプレースホルダを置く)
+        spike: "spike.html", // OCR検証スパイクページ(Task 4)
       },
     },
   },
