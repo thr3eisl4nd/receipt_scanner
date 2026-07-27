@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, test } from "vitest";
-import { saveState, loadState, clearState, currentMonth } from "./storage";
-import type { PersistedState } from "../types";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { saveState, loadState, clearState, currentMonth, STORAGE_KEY } from "./storage";
+import type { PersistedState, Row } from "../types";
 
 const valid: PersistedState = {
   version: 1,
@@ -12,6 +12,7 @@ const valid: PersistedState = {
 };
 
 beforeEach(() => localStorage.clear());
+afterEach(() => vi.restoreAllMocks());
 
 describe("storage", () => {
   test("save→loadで往復できる", () => {
@@ -24,14 +25,23 @@ describe("storage", () => {
   });
 
   test("壊れたJSONはnull(例外を投げない)", () => {
-    localStorage.setItem("receipt-scanner:state:v1", "{oops");
+    localStorage.setItem(STORAGE_KEY, "{oops");
     expect(loadState()).toBeNull();
   });
 
   test("スキーマ不一致(versionなし・rowsが配列でない)はnull", () => {
-    localStorage.setItem("receipt-scanner:state:v1", JSON.stringify({ version: 99 }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 99 }));
     expect(loadState()).toBeNull();
-    localStorage.setItem("receipt-scanner:state:v1", JSON.stringify({ version: 1, month: "x", updatedAt: "x", rows: "no" }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, month: "x", updatedAt: "x", rows: "no" }));
+    expect(loadState()).toBeNull();
+  });
+
+  test.each([
+    ["monthの形式不正", { ...valid, month: "x" }],
+    ["存在しない月", { ...valid, month: "2026-13" }],
+    ["updatedAtの形式不正", { ...valid, updatedAt: "x" }],
+  ])("%sはnull", (_label, value) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
     expect(loadState()).toBeNull();
   });
 
@@ -41,7 +51,55 @@ describe("storage", () => {
     expect(loadState()).toBeNull();
   });
 
-  test("currentMonthはYYYY-MM形式", () => {
-    expect(currentMonth()).toMatch(/^\d{4}-\d{2}$/);
+  test("小数のamountYenは保存しない(false)", () => {
+    const invalid: PersistedState = {
+      ...valid,
+      rows: [{ ...valid.rows[0], amountYen: 1.5 }],
+    };
+
+    expect(saveState(invalid)).toBe(false);
+    expect(loadState()).toBeNull();
+  });
+
+  test("返金・取消の負数amountYenは保存でき往復できる", () => {
+    const refund: PersistedState = {
+      ...valid,
+      rows: [{ ...valid.rows[0], amountYen: -1280 }],
+    };
+
+    expect(saveState(refund)).toBe(true);
+    expect(loadState()).toEqual(refund);
+  });
+
+  test("容量超過時は例外を投げずfalseを返す", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    });
+
+    expect(saveState(valid)).toBe(false);
+  });
+
+  test("candidates/thumbnailUrl/processingが混入したRowでも余分なキーを保存しない", () => {
+    const rowWithExtras: Row = {
+      ...valid.rows[0],
+      candidates: [1200, 1280],
+      thumbnailUrl: "blob:example",
+      processing: true,
+    };
+
+    expect(saveState({ ...valid, rows: [rowWithExtras] })).toBe(true);
+    const raw = localStorage.getItem(STORAGE_KEY);
+    expect(raw).not.toBeNull();
+    expect(raw).not.toContain("candidates");
+    expect(raw).not.toContain("thumbnailUrl");
+    expect(raw).not.toContain("processing");
+    expect(loadState()).toEqual(valid);
+  });
+
+  test("currentMonthは現在のローカル年月を返す", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0));
+    expect(currentMonth()).toBe("2026-01");
+    vi.useRealTimers();
   });
 });
