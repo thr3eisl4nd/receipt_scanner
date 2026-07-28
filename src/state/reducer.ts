@@ -2,24 +2,43 @@ import type { PersistedState, Row } from "../types";
 
 export type AppState = { month: string; rows: Row[]; saveFailed: boolean };
 
+/** updateRowで許可するパッチ。`id`は対象外(型レベルでID上書きを禁止する)。 */
+export type RowPatch = Partial<Omit<Row, "id">>;
+
 export type Action =
   | { type: "hydrate"; state: AppState }
   | { type: "addRows"; rows: Row[] }
-  | { type: "updateRow"; id: string; patch: Partial<Row> }
+  | { type: "updateRow"; id: string; patch: RowPatch }
   | { type: "removeRow"; id: string }
   | { type: "clearMonth"; month: string }
   | { type: "setSaveFailed"; value: boolean };
+
+/** 円整数として妥当か(null許容)。NaN/Infinity/小数を拒否する。 */
+function isYenAmount(value: number | null): boolean {
+  return value === null || Number.isSafeInteger(value);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unknown action: ${JSON.stringify(value)}`);
+}
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "hydrate":
       return action.state;
     case "addRows":
-      return { ...state, rows: [...state.rows, ...action.rows] };
+      return {
+        ...state,
+        rows: [...state.rows, ...action.rows.filter((r) => isYenAmount(r.amountYen))],
+      };
     case "updateRow":
       return {
         ...state,
-        rows: state.rows.map((r) => (r.id === action.id ? { ...r, ...action.patch } : r)),
+        rows: state.rows.map((row) => {
+          if (row.id !== action.id) return row;
+          const next = { ...row, ...action.patch, id: row.id };
+          return isYenAmount(next.amountYen) ? next : row;
+        }),
       };
     case "removeRow":
       return { ...state, rows: state.rows.filter((r) => r.id !== action.id) };
@@ -27,6 +46,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { month: action.month, rows: [], saveFailed: false };
     case "setSaveFailed":
       return { ...state, saveFailed: action.value };
+    default:
+      return assertNever(action);
   }
 }
 
@@ -83,6 +104,16 @@ export function fromPersisted(p: PersistedState): AppState {
   return {
     month: p.month,
     saveFailed: false,
-    rows: p.rows.map((r) => ({ ...r, candidates: [] })),
+    rows: p.rows.map(
+      ({ id, payer, amountYen, label, status, source }): Row => ({
+        id,
+        payer,
+        amountYen,
+        label,
+        status,
+        source,
+        candidates: [],
+      }),
+    ),
   };
 }
