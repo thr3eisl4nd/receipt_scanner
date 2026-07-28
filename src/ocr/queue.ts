@@ -38,6 +38,30 @@ function failedPatch(): RowPatch {
   return { amountYen: null, status: "failed", candidates: [], processing: false };
 }
 
+/**
+ * 同一`OcrEngine`インスタンスへのアクセスをモジュール内で直列化するレーン。
+ *
+ * `createOcrQueue()`ごとの`running`フラグだけでは、同じengineを共有する
+ * 複数のキューインスタンスが同時に`processItem()`(canvasデコード含む)へ
+ * 到達し得る(Codexレビュー指摘I1)。ppu-paddle-ocrのONNXセッションは
+ * 同時多重実行を想定していないため、engine単位でグローバルに排他する。
+ */
+const engineLanes = new WeakMap<OcrEngine, Promise<void>>();
+
+/** `engine`に紐づくレーンで`job`を直列実行する。前段のjob失敗有無に関わらず後続は必ず実行される。 */
+function runExclusive<T>(engine: OcrEngine, job: () => Promise<T>): Promise<T> {
+  const previous = engineLanes.get(engine) ?? Promise.resolve();
+  const result = previous.then(job);
+  engineLanes.set(
+    engine,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 export type OcrQueue = ReturnType<typeof createOcrQueue>;
 
 /**
@@ -54,9 +78,35 @@ export function createOcrQueue(
 ) {
   const pending: Item[] = [];
   let running = false;
+  let itemInFlight = false;
   let initialized = false;
   let total = 0;
   let done = 0;
+
+  /** 呼び出し側コールバックの例外でキューの状態遷移を壊さないよう隔離する(Codexレビュー指摘I2)。 */
+  function emitStatus(text: string): void {
+    try {
+      cb.onStatus(text);
+    } catch (err) {
+      console.error("OCR status callback failed:", err);
+    }
+  }
+
+  /** 同上。呼び出し側コールバックの例外を握りつぶし、後続行の処理継続を妨げない。 */
+  function emitResult(id: string, patch: RowPatch): void {
+    try {
+      cb.onResult(id, patch);
+    } catch (err) {
+      console.error("OCR result callback failed:", id, err);
+    }
+  }
+
+  /** 裸の`void run()`を一箇所に集約し、予期しないrejectを未処理のまま放置しない。 */
+  function kick(): void {
+    void run().catch((err) => {
+      console.error("OCR queue failed unexpectedly:", err);
+    });
+  }
 
   async function processItem(item: Item): Promise<void> {
     let canvas: HTMLCanvasElement | undefined;
@@ -100,7 +150,7 @@ export function createOcrQueue(
       if (canvas) releaseCanvas(canvas);
       if (enhanced) releaseCanvas(enhanced);
     }
-    cb.onResult(item.id, patch);
+    emitResult(item.id, patch);
   }
 
   async function run(): Promise<void> {
@@ -108,7 +158,7 @@ export function createOcrQueue(
     running = true;
     try {
       if (!initialized) {
-        cb.onStatus("モデル準備中…");
+        emitStatus("モデル準備中…");
         try {
           await engine.initialize();
           initialized = true;
@@ -118,26 +168,33 @@ export function createOcrQueue(
           console.error("OCR engine initialization failed:", err);
           for (const item of pending.splice(0)) {
             done++;
-            cb.onResult(item.id, failedPatch());
+            emitResult(item.id, failedPatch());
           }
-          cb.onStatus("モデル準備に失敗しました");
+          emitStatus("モデル準備に失敗しました");
           return;
         }
       }
       while (pending.length > 0) {
         const item = pending.shift()!;
         done++;
-        cb.onStatus(`画像 ${done}/${total} 処理中…`);
-        await processItem(item);
+        emitStatus(`画像 ${done}/${total} 処理中…`);
+        itemInFlight = true;
+        try {
+          // engine単位のレーンで排他する。同じengineを共有する別キューインスタンスからの
+          // processItem()(canvasデコード含む)とも同時実行1を保証する(Codexレビュー指摘I1)。
+          await runExclusive(engine, () => processItem(item));
+        } finally {
+          itemInFlight = false;
+        }
       }
-      cb.onStatus(total > 0 ? `完了 (${done}/${total})` : "");
+      emitStatus(total > 0 ? `完了 (${done}/${total})` : "");
     } finally {
       running = false;
       if (pending.length > 0) {
         // 完了通知(onStatus/onResult)コールバックの中から同期的にenqueueされた
         // 分を取りこぼさない(Codexレビュー指摘: runningガードで即returnした
         // enqueue呼び出しをここで拾い直す)。
-        void run();
+        kick();
       } else {
         total = 0;
         done = 0;
@@ -147,16 +204,25 @@ export function createOcrQueue(
 
   return {
     enqueue(id: string, file: File) {
+      // 未処理・処理中のアイテムが無ければ、これは新しいバッチの開始とみなし
+      // カウンタをリセットする。完了通知コールバックからの同期的な再入enqueueで
+      // 前バッチのdone/totalを引きずり「画像 2/2」のような不自然な表示になる
+      // 問題への対策(Codexレビュー指摘Minor)。処理中アイテムがある場合(同一
+      // バッチの継続的な追加投入)はリセットしない。
+      if (pending.length === 0 && !itemInFlight) {
+        total = 0;
+        done = 0;
+      }
       pending.push({ id, file });
       total++;
-      void run();
+      kick();
     },
     /** 未処理分を全部キャンセルする(処理済み・処理中の行はそのまま維持)。 */
     cancelAll() {
       const canceled = pending.splice(0);
       done += canceled.length; // 完了表示の分母/分子を一致させる(Codexレビュー指摘)
       for (const item of canceled) {
-        cb.onResult(item.id, failedPatch());
+        emitResult(item.id, failedPatch());
       }
     },
   };

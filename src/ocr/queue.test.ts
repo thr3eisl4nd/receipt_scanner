@@ -503,4 +503,180 @@ describe("createOcrQueue", () => {
 
     expect(engine.initialize).toHaveBeenCalledTimes(1);
   });
+
+  // --- Codexレビュー指摘(直列保証の適用範囲/例外境界)の回帰テスト ---
+
+  it("Aの補正再試行(2回目recognize)がgateで止まっている間、Bのloadは始まらない", async () => {
+    const deps = makeDeps();
+    let recognizeCallCount = 0;
+    let releaseRetry!: () => void;
+    const retryGate = new Promise<void>((resolve) => (releaseRetry = resolve));
+
+    const engine = makeEngine(async () => {
+      recognizeCallCount++;
+      if (recognizeCallCount === 2) {
+        // Aの再試行(補正版)recognizeをここで止める。最もメモリ負荷が高い局面。
+        await retryGate;
+      }
+      return [line()];
+    });
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("needs-review")) // Aの1回目 → 再試行トリガー
+      .mockReturnValue(resultOf("auto-high")); // Aの2回目・Bの1回目とも
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+    queue.enqueue("b", new File([""], "b.png"));
+
+    await vi.waitFor(() => expect(recognizeCallCount).toBe(2));
+
+    // Aの再試行が止まっている間、Bはloadすら始まっていない
+    expect(deps.loadAsCanvas).toHaveBeenCalledTimes(1);
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
+    expect(onResult).not.toHaveBeenCalled();
+
+    releaseRetry();
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
+
+    expect(deps.loadAsCanvas).toHaveBeenCalledTimes(2);
+    // Aは補正版もauto-highだったので補正版採用、Bは1回目からauto-high
+    expect(onResult).toHaveBeenCalledWith("a", expect.objectContaining({ status: "auto-high" }));
+    expect(onResult).toHaveBeenCalledWith("b", expect.objectContaining({ status: "auto-high" }));
+  });
+
+  it("同一engineを共有する2つのキューでも処理の同時実行数は1になる", async () => {
+    const events: string[] = [];
+    let gated = false;
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
+
+    function makeTaggedDeps(tag: string): OcrQueueDeps {
+      return {
+        loadAsCanvas: vi.fn(async () => {
+          events.push(`load-${tag}`);
+          return fakeCanvas();
+        }),
+        enhanceContrast: vi.fn(() => fakeCanvas()),
+      };
+    }
+
+    const engine = makeEngine(async () => {
+      events.push("recognize-start");
+      if (!gated) {
+        gated = true;
+        await firstGate;
+      }
+      events.push("recognize-end");
+      return [line()];
+    });
+    extractTotalMock.mockReturnValue(resultOf("auto-high"));
+
+    const depsA = makeTaggedDeps("a");
+    const depsB = makeTaggedDeps("b");
+    const onResultA = vi.fn();
+    const onResultB = vi.fn();
+    const queue1 = createOcrQueue(engine, { onStatus: vi.fn(), onResult: onResultA }, depsA);
+    const queue2 = createOcrQueue(engine, { onStatus: vi.fn(), onResult: onResultB }, depsB);
+
+    queue1.enqueue("a", new File([""], "a.png"));
+    queue2.enqueue("b", new File([""], "b.png"));
+
+    await vi.waitFor(() => expect(events).toContain("recognize-start"));
+    // どちらが先にレーンを取るかは決定的ではないが、片方が止まっている間に
+    // もう片方のloadが始まっていないことは保証されるべき
+    expect(events.filter((e) => e.startsWith("load-"))).toHaveLength(1);
+
+    releaseFirst();
+    await vi.waitFor(() => expect(onResultA).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onResultB).toHaveBeenCalledTimes(1));
+
+    expect(events).toHaveLength(6);
+    expect(events[0]).toMatch(/^load-/);
+    expect(events[1]).toBe("recognize-start");
+    expect(events[2]).toBe("recognize-end");
+    expect(events[3]).toMatch(/^load-/);
+    expect(events[3]).not.toBe(events[0]); // 2件目は1件目と異なるタグ(=待たされていた)
+    expect(events[4]).toBe("recognize-start");
+    expect(events[5]).toBe("recognize-end");
+  });
+
+  it("モデル準備中のonStatusがthrowしても再帰暴走せず、後続行が処理される", async () => {
+    const deps = makeDeps();
+    const engine = makeEngine(() => [line()]);
+    extractTotalMock.mockReturnValue(resultOf("auto-high"));
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const onStatus = vi.fn((text: string) => {
+      if (text === "モデル準備中…") throw new Error("onStatus boom");
+    });
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus, onResult }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    try {
+      await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+
+      expect(onResult).toHaveBeenCalledWith(
+        "a",
+        expect.objectContaining({ status: "auto-high" }),
+      );
+      expect(engine.initialize).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("onResultがthrowしても後続行の処理は継続される", async () => {
+    const deps = makeDeps();
+    const engine = makeEngine(() => [line()]);
+    extractTotalMock.mockReturnValue(resultOf("auto-high", 100, [100]));
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const seen: string[] = [];
+    const onResult = vi.fn((id: string) => {
+      seen.push(id);
+      if (id === "a") throw new Error("onResult boom");
+    });
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+    queue.enqueue("b", new File([""], "b.png"));
+
+    try {
+      await vi.waitFor(() => expect(seen).toEqual(["a", "b"]));
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("完了通知からの再入enqueueは新バッチとしてカウンタをリセットする(「画像 1/1」表示)", async () => {
+    const deps = makeDeps();
+    const engine = makeEngine(() => [line()]);
+    extractTotalMock.mockReturnValue(resultOf("auto-high", 100, [100]));
+
+    const onResult = vi.fn();
+    let reentered = false;
+    const onStatus = vi.fn((text: string) => {
+      if (text.startsWith("完了") && !reentered) {
+        reentered = true;
+        queue.enqueue("b", new File([""], "b.png"));
+      }
+    });
+    const queue = createOcrQueue(engine, { onStatus, onResult }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
+
+    // 前バッチ(a)の完了通知内でenqueueされたb用の進捗表示は、前バッチのdone/totalを
+    // 引きずった「画像 2/2」ではなく、新バッチとして「画像 1/1」になるべき
+    expect(onStatus.mock.calls.map((c) => c[0])).toEqual([
+      "モデル準備中…",
+      "画像 1/1 処理中…",
+      "完了 (1/1)",
+      "画像 1/1 処理中…",
+      "完了 (1/1)",
+    ]);
+  });
 });
