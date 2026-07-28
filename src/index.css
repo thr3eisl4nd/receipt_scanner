@@ -2,6 +2,22 @@
   color-scheme: light dark;
 }
 
-body {
-  margin: 0;
-}
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Hiragino Sans", sans-serif; margin: 0; }
+main { padding: 12px; padding-bottom: calc(140px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
+.add-buttons { display: flex; gap: 8px; }
+.payer-group { flex: 1; border: 1px solid #ccc; border-radius: 8px; padding: 8px; }
+.payer-group button { display: block; width: 100%; margin-top: 6px; padding: 10px; font-size: 15px; }
+.receipt-list { list-style: none; padding: 0; }
+.receipt-row { display: flex; gap: 8px; align-items: flex-start; border-bottom: 1px solid #eee; padding: 8px 0; }
+.thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
+.thumb.zoomed { width: 100%; height: auto; object-fit: contain; }
+.row-main { flex: 1; }
+.amount { font-size: 18px; font-weight: 700; background: none; border: 1px dashed #999; border-radius: 4px; padding: 4px 8px; }
+.badge { font-size: 12px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
+.badge-needs-review, .badge-failed { background: #fff3cd; border: 1px solid #b8860b; }
+.badge-auto-high, .badge-confirmed, .badge-manual { background: #e6f4ea; border: 1px solid #2e7d32; }
+.status-needs-review, .status-failed { background: #fffbea; }
+.error { color: #b00020; }
+.summary-panel { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 2px solid #333;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
