@@ -9,6 +9,7 @@ export type Action =
   | { type: "hydrate"; state: AppState }
   | { type: "addRows"; rows: Row[] }
   | { type: "updateRow"; id: string; patch: RowPatch }
+  | { type: "applyOcrResult"; id: string; patch: RowPatch }
   | { type: "removeRow"; id: string }
   | { type: "clearMonth"; month: string }
   | { type: "setSaveFailed"; value: boolean };
@@ -40,12 +41,30 @@ export function reducer(state: AppState, action: Action): AppState {
           return isYenAmount(next.amountYen) ? next : row;
         }),
       };
+    // OCR結果専用のアクション。`processing:true`の行(=まだユーザーが手修正していない、
+    // またはOCR結果を待っている行)にだけパッチを適用する。ユーザーが編集中/編集済みで
+    // 既に`processing:false`になった行には適用しない。無条件に`updateRow`していると、
+    // 「OCR処理中に手修正→数秒後に遅延到着したOCR結果が手修正を無警告で上書きする」という
+    // 金額データ破損バグになる(Codexレビュー指摘C1)。手修正側(ReceiptRow.commitEdit等)は
+    // 必ずpatchに`processing:false`を含めることで、以後の遅延OCR結果を無効化する。
+    case "applyOcrResult":
+      return {
+        ...state,
+        rows: state.rows.map((row) => {
+          if (row.id !== action.id || !row.processing) return row;
+          const next = { ...row, ...action.patch, id: row.id };
+          return isYenAmount(next.amountYen) ? next : row;
+        }),
+      };
     case "removeRow":
       return { ...state, rows: state.rows.filter((r) => r.id !== action.id) };
     case "clearMonth":
       return { month: action.month, rows: [], saveFailed: false };
+    // 同値なら同一state参照を返す(Codexレビュー指摘M1)。自動保存effectは
+    // rows/month変更のたびに無条件でdispatchするため、これがないと保存結果が
+    // 変わらなくても毎回新しいstateオブジェクトが生成され、不要な再描画が発生する。
     case "setSaveFailed":
-      return { ...state, saveFailed: action.value };
+      return state.saveFailed === action.value ? state : { ...state, saveFailed: action.value };
     default:
       return assertNever(action);
   }

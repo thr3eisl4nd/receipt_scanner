@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { AddReceiptButtons } from "./components/AddReceiptButtons";
 import { ReceiptRow } from "./components/ReceiptRow";
-import { createOcrQueue } from "./ocr/queue";
+import { createOcrQueue, type OcrQueue, type QueueStatusEvent } from "./ocr/queue";
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
-import { reducer, toPersisted, fromPersisted, type AppState } from "./state/reducer";
+import { reducer, toPersisted, fromPersisted, type AppState, type RowPatch } from "./state/reducer";
 import { saveState, loadState, currentMonth } from "./state/storage";
 import type { Payer, Row } from "./types";
 
@@ -31,20 +31,117 @@ function nextReceiptLabel(rows: Row[]): (offset: number) => string {
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
-  const [ocrStatus, setOcrStatus] = useState("");
+  const [ocrEvent, setOcrEvent] = useState<QueueStatusEvent | null>(null);
   const seenFiles = useRef(new Set<string>());
   // アンマウント時のクリーンアップ(サムネイルURL解放)用に最新のrowsを参照できるようにする。
   const rowsRef = useRef(state.rows);
   rowsRef.current = state.rows;
+  // OCRキューはuseEffect内(useMemoではなく)で生成する(Codexレビュー指摘I2)。
+  // StrictModeの開発時二重effect実行(mount→cleanup→mount)でも、cleanupのたびに
+  // 新しいengine/queueが作られ直すため、「dispose済みの古いqueueを実運用でも
+  // 使い続けてしまう」事故が起きない。onFiles等からは常にqueueRef経由で参照する。
+  const queueRef = useRef<OcrQueue | null>(null);
+  // 失敗行の再試行(I8)用に、追加時のFileをid別に保持する。行削除時にクリアする。
+  const retryFilesRef = useRef(new Map<string, File>());
+  // 行(row)とOCR「試行(job)」を分離して追跡する(Codexレビュー再指摘C1)。
+  // queue.enqueue()に渡すidを行idそのものにしていると、「OCR-A実行中→ユーザーが
+  // 空欄確定(processing:false)→再試行でprocessing:trueに戻しOCR-Bをenqueue→
+  // 古いOCR-Aの結果が遅れて到着」という順序で、`row.processing===true`だけを見る
+  // ガードが世代を区別できず、Bではなく古いAの結果が適用されてしまう。
+  // enqueueのたびに新しいjobIdを発行し、「行に対して今アクティブなjobId」と
+  // 一致する結果だけを適用する。
+  const activeJobRef = useRef(new Map<string, string>()); // rowId -> 現在アクティブなjobId
+  const jobRowRef = useRef(new Map<string, string>()); // jobId -> rowId
 
-  const { queue, engine } = useMemo(() => {
+  /**
+   * 行(rowId)に紐づく現在アクティブなjobをすべてのMapから外す(Codexレビュー再指摘・
+   * Minor: `activeJobRef`を上書きするだけだと`jobRowRef`側に逆引きエントリが残り、
+   * 再試行を繰り返すたびに解放されないエントリが積み上がる)。
+   */
+  function invalidateJobForRow(rowId: string): void {
+    const jobId = activeJobRef.current.get(rowId);
+    activeJobRef.current.delete(rowId);
+    if (jobId) jobRowRef.current.delete(jobId);
+  }
+
+  /**
+   * 行の状態が「もうfailedではない」(=成功して確定した、または手修正で確定した)へ
+   * 遷移した際、再試行用に保持していた元Fileを解放する(Codexレビュー再指摘Important:
+   * `retryFilesRef`が成功済み行のFileまでセッション終了まで保持し続けており、
+   * サムネイルを320pxへ縮小した効果を大量取り込み時に無効化していた)。
+   */
+  function releaseRetryFileIfResolved(rowId: string, patch: RowPatch): void {
+    if (patch.status !== undefined && patch.status !== "failed") {
+      retryFilesRef.current.delete(rowId);
+    }
+  }
+
+  useEffect(() => {
     const engine = createPpuPaddleEngine();
+
+    function resolveActiveRow(jobId: string): { rowId: string; row: Row } | null {
+      const rowId = jobRowRef.current.get(jobId);
+      if (!rowId) return null;
+      if (activeJobRef.current.get(rowId) !== jobId) return null; // 再試行等で無効化された古いjob
+      const row = rowsRef.current.find((r) => r.id === rowId);
+      if (!row) return null; // 削除済み行
+      return { rowId, row };
+    }
+
     const queue = createOcrQueue(engine, {
-      onStatus: setOcrStatus,
-      onResult: (id, patch) => dispatch({ type: "updateRow", id, patch }),
+      onStatus: (event) => setOcrEvent(event),
+      onThumbnail: (jobId, blob) => {
+        const resolved = resolveActiveRow(jobId);
+        // 削除済み行、または既に無効化された古いjobへの遅着Blobは表示先が無いので、
+        // Object URLすら作らず即終了する(Codexレビュー指摘I1)。
+        if (!resolved) return;
+        const { rowId, row } = resolved;
+        const url = URL.createObjectURL(blob);
+        if (row.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl); // 置換時は旧URLを解放
+        dispatch({ type: "updateRow", id: rowId, patch: { thumbnailUrl: url } });
+      },
+      // OCR結果はapplyOcrResultで反映する。updateRowと違い、ユーザーが既に手修正して
+      // processing:falseになった行には適用されない(Codexレビュー指摘C1: 遅延OCR結果に
+      // よる手修正の無警告上書き防止)。加えて、jobIdが「この行の現在アクティブなjob」と
+      // 一致しない場合(=再試行で置き換えられた古い結果)も無視する。
+      onResult: (jobId, patch) => {
+        const rowId = jobRowRef.current.get(jobId);
+        jobRowRef.current.delete(jobId);
+        if (!rowId || activeJobRef.current.get(rowId) !== jobId) return;
+        activeJobRef.current.delete(rowId);
+        // 結果が実際に適用され、かつ成功(failed以外)した場合のみ再試行用Fileを解放する。
+        // stale判定でreturn済みの場合はここへ来ないため、再試行中のFileを誤って
+        // 消すことはない。
+        releaseRetryFileIfResolved(rowId, patch);
+        dispatch({ type: "applyOcrResult", id: rowId, patch });
+      },
     });
-    return { queue, engine };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    queueRef.current = queue;
+    return () => {
+      queueRef.current = null;
+      // アンマウント時、表示中サムネイルのObject URLを全解放する(Codexレビュー指摘I1)。
+      for (const row of rowsRef.current) {
+        if (row.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl);
+      }
+      // 新規enqueue拒否→pending破棄→コールバック停止→実行中ジョブの完了待ち、を経てから
+      // engineを破棄する(Codexレビュー指摘I2: cancelAll()は未処理分しか止めないため、
+      // 実行中のONNXセッションと競合したまま破棄していた)。dispose/destroyそれぞれの
+      // rejectを個別にcatchする(`void queue.dispose().finally(() => void engine.destroy())`
+      // は`engine.destroy()`のrejectがどこにも捕まらず未処理rejectionになる、という
+      // Codexレビュー再指摘M2の回帰防止)。
+      void (async () => {
+        try {
+          await queue.dispose();
+        } catch (err) {
+          console.error("OCR queue disposal failed:", err);
+        }
+        try {
+          await engine.destroy();
+        } catch (err) {
+          console.error("OCR engine destruction failed:", err);
+        }
+      })();
+    };
   }, []);
 
   // 自動保存(画像以外)。失敗はUI表示
@@ -53,19 +150,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.month, state.rows]);
 
-  // アンマウント時のリソース解放: 未処理OCRのキャンセル・engine破棄・
-  // 表示中サムネイルのObject URL全解放(Codexレビュー指摘。行削除時以外は
-  // 解放されていなかった)。このSPAは現状ルーティング等で実際にアンマウント
-  // しないが、テスト環境やFast Refresh下でのリーク防止として備える。
-  useEffect(() => {
-    return () => {
-      queue.cancelAll();
-      void engine.destroy();
-      for (const row of rowsRef.current) {
-        if (row.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl);
-      }
-    };
-  }, [queue, engine]);
+  // 行(rowId)に対して新しい試行(jobId)を発行してenqueueする。以前その行に紐づいて
+  // いたjobId(あれば)はここで置き換えられ、以後は「アクティブでない」ため、後から
+  // 遅れて届く結果は無視される(Codexレビュー再指摘C1)。
+  const enqueueForRow = (rowId: string, file: File) => {
+    invalidateJobForRow(rowId); // 前のjob(あれば)の逆引きエントリも解放してから差し替える
+    const jobId = crypto.randomUUID();
+    activeJobRef.current.set(rowId, jobId);
+    jobRowRef.current.set(jobId, rowId);
+    queueRef.current?.enqueue(jobId, file);
+  };
 
   const onFiles = (payer: Payer, files: File[]) => {
     const rows: Row[] = [];
@@ -86,10 +180,12 @@ export default function App() {
         status: "failed",
         source: "ocr",
         candidates: [],
-        thumbnailUrl: URL.createObjectURL(file),
+        // フル画像のObject URLはここでは作らない(Codexレビュー指摘I1)。
+        // サムネイルはOCRキューが処理済み縮小canvasから生成し、onThumbnailで届く。
         processing: true,
       });
-      queue.enqueue(id, file);
+      retryFilesRef.current.set(id, file);
+      enqueueForRow(id, file);
     }
     if (rows.length > 0) dispatch({ type: "addRows", rows });
   };
@@ -97,18 +193,85 @@ export default function App() {
   const onRemove = (id: string) => {
     const row = state.rows.find((r) => r.id === id);
     if (row?.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl);
+    retryFilesRef.current.delete(id);
+    invalidateJobForRow(id);
     dispatch({ type: "removeRow", id });
   };
+
+  // 失敗行の再試行(Codexレビュー指摘I8)。Appが保持しているFileで再enqueueする。
+  const onRetry = (id: string) => {
+    const file = retryFilesRef.current.get(id);
+    if (!file) return;
+    dispatch({ type: "updateRow", id, patch: { processing: true, status: "failed" } });
+    enqueueForRow(id, file);
+  };
+
+  // モデル初期化失敗時の一括リトライ。現在failedかつFileを保持している行をまとめて再試行する。
+  const onRetryModelError = () => {
+    for (const row of state.rows) {
+      if (row.status === "failed" && !row.processing && retryFilesRef.current.has(row.id)) {
+        onRetry(row.id);
+      }
+    }
+  };
+
+  // 一括キャンセル(Codexレビュー再指摘I2)。`queue.cancelAll()`はキュー内の未処理
+  // (pending)分しか止められず、実行中(itemInFlight)の1件はONNX推論を実際には
+  // 中断できない。そのため実行中かどうかに関わらず、現在processing中の行はここで
+  // 即座に論理キャンセル(failed/processing:false)し、activeJobを無効化して以後
+  // 届く結果を無視できるようにする。`queue.cancelAll()`はpending分の実処理(無駄な
+  // recognize呼び出し)を止めるために引き続き呼ぶ。
+  const onCancelAll = () => {
+    for (const row of state.rows) {
+      if (row.processing) {
+        invalidateJobForRow(row.id);
+        dispatch({
+          type: "updateRow",
+          id: row.id,
+          patch: { processing: false, status: "failed", amountYen: null, candidates: [] },
+        });
+      }
+    }
+    queueRef.current?.cancelAll();
+  };
+
+  const hasPendingWork = state.rows.some((r) => r.processing);
 
   return (
     <main>
       <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
       <AddReceiptButtons onFiles={onFiles} />
-      <p aria-live="polite" className="ocr-status">{ocrStatus}</p>
+
+      {ocrEvent?.kind === "model-error" ? (
+        <div role="alert" className="error ocr-model-error">
+          <p>{ocrEvent.message}</p>
+          <button type="button" onClick={onRetryModelError}>再試行</button>
+        </div>
+      ) : (
+        <p role="status" aria-live="polite" aria-atomic="true" className="ocr-status">
+          {ocrEvent?.kind === "preparing" && "モデル準備中…"}
+          {ocrEvent?.kind === "processing" && `画像 ${ocrEvent.current}/${ocrEvent.total} 処理中…`}
+          {ocrEvent?.kind === "complete" && ocrEvent.total > 0 && `完了 (${ocrEvent.done}/${ocrEvent.total})`}
+        </p>
+      )}
+      {hasPendingWork && (
+        <button type="button" className="cancel-all" onClick={onCancelAll}>すべてキャンセル</button>
+      )}
+
       {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
       <ul className="receipt-list">
         {state.rows.map((row) => (
-          <ReceiptRow key={row.id} row={row} onPatch={(id, patch) => dispatch({ type: "updateRow", id, patch })} onRemove={onRemove} />
+          <ReceiptRow
+            key={row.id}
+            row={row}
+            canRetry={retryFilesRef.current.has(row.id)}
+            onPatch={(id, patch) => {
+              releaseRetryFileIfResolved(id, patch);
+              dispatch({ type: "updateRow", id, patch });
+            }}
+            onRemove={onRemove}
+            onRetry={onRetry}
+          />
         ))}
       </ul>
       {/* SummaryPanel・ManualEntryForm・新しい月 はTask 10 */}

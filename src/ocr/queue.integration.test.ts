@@ -22,6 +22,7 @@ describe("createOcrQueue (結合: 実extractTotal + 合成OcrLine[])", () => {
     const deps: OcrQueueDeps = {
       loadAsCanvas: vi.fn(async () => fakeCanvas()),
       enhanceContrast: vi.fn(() => fakeCanvas()),
+      toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
     };
     const engine: OcrEngine = {
       initialize: vi.fn(async () => undefined),
@@ -30,7 +31,7 @@ describe("createOcrQueue (結合: 実extractTotal + 合成OcrLine[])", () => {
     };
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "receipt.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));

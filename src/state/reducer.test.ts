@@ -34,6 +34,16 @@ describe("reducer", () => {
     expect(s.rows.map((r) => r.id)).toEqual(["b"]);
   });
 
+  test("setSaveFailedは同値なら同一stateを返す(Codexレビュー指摘M1: 不要な再描画の防止)", () => {
+    const s = { ...base, saveFailed: false };
+    const same = reducer(s, { type: "setSaveFailed", value: false });
+    expect(same).toBe(s);
+
+    const changed = reducer(s, { type: "setSaveFailed", value: true });
+    expect(changed).not.toBe(s);
+    expect(changed.saveFailed).toBe(true);
+  });
+
   test("clearMonthで全行が消え月が変わる", () => {
     let s = reducer(base, { type: "addRows", rows: [row({})] });
     s = reducer(s, { type: "clearMonth", month: "2026-08" });
@@ -55,6 +65,57 @@ describe("reducer", () => {
     const next = reducer(s, { type: "updateRow", id: "a", patch });
     expect(next.rows.map((r) => r.id)).toEqual(["a"]);
     expect(next.rows[0].label).toBe("変更後");
+  });
+
+  test("applyOcrResultはprocessing:trueの行にのみパッチを適用する(Codexレビュー指摘C1)", () => {
+    const s = reducer(base, {
+      type: "addRows",
+      rows: [row({ id: "a", amountYen: null, status: "failed", processing: true })],
+    });
+    const next = reducer(s, {
+      type: "applyOcrResult",
+      id: "a",
+      patch: { amountYen: 1234, status: "auto-high", candidates: [], processing: false },
+    });
+    expect(next.rows[0]).toMatchObject({ amountYen: 1234, status: "auto-high", processing: false });
+  });
+
+  test("applyOcrResultはprocessing:falseの行(=手修正済み)には適用しない。OCR処理中の手修正が遅延結果で上書きされる回帰を防ぐ(Codexレビュー指摘C1)", () => {
+    // 再現順序: 1) 行が処理中で表示 2) ユーザーが5,000円へ手修正(processing:falseになる)
+    // 3) 数秒後に遅れて1,234円のOCR結果が到着 → 5,000円が無警告で上書きされてはならない
+    let s = reducer(base, {
+      type: "addRows",
+      rows: [row({ id: "a", amountYen: null, status: "failed", processing: true })],
+    });
+    // ユーザーの手修正(ReceiptRow.commitEditと同じ形): processing:falseを含む
+    s = reducer(s, {
+      type: "updateRow",
+      id: "a",
+      patch: { amountYen: 5000, status: "confirmed", candidates: [], processing: false },
+    });
+    expect(s.rows[0]).toMatchObject({ amountYen: 5000, status: "confirmed", processing: false });
+
+    // 遅延OCR結果が後から到着してもprocessing:falseの行には適用されない
+    const next = reducer(s, {
+      type: "applyOcrResult",
+      id: "a",
+      patch: { amountYen: 1234, status: "auto-high", candidates: [], processing: false },
+    });
+    expect(next.rows[0]).toMatchObject({ amountYen: 5000, status: "confirmed" });
+    expect(next.rows[0]).toBe(s.rows[0]); // 対象外の行はmap内でも同一参照のまま(変更されていない証跡)
+  });
+
+  test("applyOcrResultも小数・NaN・InfinityのamountYenを拒否し行を変更しない", () => {
+    const s = reducer(base, {
+      type: "addRows",
+      rows: [row({ id: "a", amountYen: 1000, processing: true })],
+    });
+    const next = reducer(s, {
+      type: "applyOcrResult",
+      id: "a",
+      patch: { amountYen: Number.NaN, status: "auto-high", candidates: [], processing: false },
+    });
+    expect(next.rows[0].amountYen).toBe(1000);
   });
 
   test("addRowsは小数・NaN・InfinityのamountYenを含む行を追加しない", () => {

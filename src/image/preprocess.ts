@@ -73,6 +73,31 @@ export async function loadAsCanvas(file: File, maxEdge = 1600): Promise<HTMLCanv
   }
 }
 
+/**
+ * OCR用に既に縮小済みのcanvasから、表示用サムネイルのBlobを生成する
+ * (長辺maxEdgeへ再縮小、JPEG)。元画像のフルサイズObject URLをApp側で持ち続ける
+ * とメモリを圧迫するため(Codexレビュー指摘I1)、OCRキューが処理の過程で既に
+ * 作った縮小canvasを再利用してサムネイルだけ別途生成する。
+ */
+export async function toThumbnailBlob(src: HTMLCanvasElement, maxEdge = 320): Promise<Blob> {
+  const scaled = drawScaled(src, src.width, src.height, maxEdge);
+  try {
+    const blob = await new Promise<Blob | null>((resolve, reject) => {
+      try {
+        scaled.toBlob((b) => resolve(b), "image/jpeg", 0.85);
+      } catch (err) {
+        reject(err);
+      }
+    });
+    if (!blob) throw new Error("サムネイル生成に失敗しました(toBlobがnullを返却)");
+    return blob;
+  } finally {
+    // 生成後は即座に解放する(queue.ts releaseCanvasと同じ方針)。
+    scaled.width = 1;
+    scaled.height = 1;
+  }
+}
+
 /** 低信頼時の再試行用: グレースケール+コントラストストレッチ。 */
 export function enhanceContrast(src: HTMLCanvasElement): HTMLCanvasElement {
   const canvas = document.createElement("canvas");

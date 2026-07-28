@@ -1,27 +1,46 @@
 import type { OcrEngine } from "./engine";
 import type { RowPatch } from "../state/reducer";
-import { loadAsCanvas, enhanceContrast } from "../image/preprocess";
+import { loadAsCanvas, enhanceContrast, toThumbnailBlob } from "../image/preprocess";
 import { extractTotal } from "../extract/extractTotal";
 
+/**
+ * キューの進捗・エラーを構造化した形で通知する(Codexレビュー指摘I8)。
+ * 従来は`onStatus(text: string)`で「モデル準備中」「画像 3/12 処理中」等の文言を
+ * そのまま渡していたが、これだと通常進捗(`role="status"`)とモデル初期化失敗
+ * (`role="alert"`+リトライボタン)をUI側で区別できない。
+ */
+export type QueueStatusEvent =
+  | { kind: "preparing" }
+  // `current`は「今処理を開始した画像の番号」(1始まり)。`done`(完了件数)と紛らわしい
+  // ため名前を分ける(Codexレビュー再指摘M1): `processing`イベントは対象アイテムの
+  // recognize()開始前にemitされるため、値そのものは「まだ完了していない現在番号」。
+  | { kind: "processing"; current: number; total: number }
+  | { kind: "model-error"; message: string }
+  | { kind: "complete"; done: number; total: number };
+
 export type QueueCallbacks = {
-  onStatus(text: string): void; // "モデル準備中" / "画像 3/12 処理中"
+  onStatus(event: QueueStatusEvent): void;
+  // 処理済み(縮小済み)canvasから生成した320px級サムネイルBlobを行へ返す(Codexレビュー指摘I1)。
+  // 呼び出し側はObject URL化し、置換時・行削除時・削除済み行への遅着時に確実にrevokeすること。
+  onThumbnail(id: string, blob: Blob): void;
   onResult(id: string, patch: RowPatch): void; // 行更新(amountYen/status/candidates/processing)
 };
 
 type Item = { id: string; file: File };
 
 /**
- * `loadAsCanvas`/`enhanceContrast`の差し替えポイント。
+ * `loadAsCanvas`/`enhanceContrast`/`toThumbnailBlob`の差し替えポイント。
  * 実運用では`src/image/preprocess.ts`の実装を使うが、jsdom環境の単体テストでは
- * 実Canvas描画(`drawImage`/`getImageData`等)に依存できないため、薄いスタブに
+ * 実Canvas描画(`drawImage`/`getImageData`/`toBlob`等)に依存できないため、薄いスタブに
  * 差し替えられるようにしている。
  */
 export type OcrQueueDeps = {
   loadAsCanvas: (file: File) => Promise<HTMLCanvasElement>;
   enhanceContrast: (src: HTMLCanvasElement) => HTMLCanvasElement;
+  toThumbnailBlob: (src: HTMLCanvasElement) => Promise<Blob>;
 };
 
-const defaultDeps: OcrQueueDeps = { loadAsCanvas, enhanceContrast };
+const defaultDeps: OcrQueueDeps = { loadAsCanvas, enhanceContrast, toThumbnailBlob };
 
 /** 処理済みcanvasの明示解放。描画バッファをGC任せにせず即座に縮小する。 */
 function releaseCanvas(canvas: HTMLCanvasElement): void {
@@ -83,10 +102,30 @@ export function createOcrQueue(
   let total = 0;
   let done = 0;
 
-  /** 呼び出し側コールバックの例外でキューの状態遷移を壊さないよう隔離する(Codexレビュー指摘I2)。 */
-  function emitStatus(text: string): void {
+  // dispose()用の状態(Codexレビュー指摘I2)。`disposed`になった後は新規enqueueを
+  // 拒否し、コールバックも一切発火させない。`idleWaiters`は「現在実行中のジョブが
+  // 完了しキューが完全に空転(running===false)した」タイミングでdispose()側の
+  // 待機を解決するための単純なイベント通知。
+  let disposed = false;
+  let idleWaiters: Array<() => void> = [];
+
+  function notifyIdle(): void {
+    const waiters = idleWaiters;
+    idleWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  function waitUntilIdle(): Promise<void> {
+    if (!running) return Promise.resolve();
+    return new Promise((resolve) => idleWaiters.push(resolve));
+  }
+
+  /** 呼び出し側コールバックの例外でキューの状態遷移を壊さないよう隔離する(Codexレビュー指摘I2)。
+   *  dispose後は呼び出し側(アンマウント済みの可能性がある)へコールバックを一切発火しない。 */
+  function emitStatus(event: QueueStatusEvent): void {
+    if (disposed) return;
     try {
-      cb.onStatus(text);
+      cb.onStatus(event);
     } catch (err) {
       console.error("OCR status callback failed:", err);
     }
@@ -94,10 +133,21 @@ export function createOcrQueue(
 
   /** 同上。呼び出し側コールバックの例外を握りつぶし、後続行の処理継続を妨げない。 */
   function emitResult(id: string, patch: RowPatch): void {
+    if (disposed) return;
     try {
       cb.onResult(id, patch);
     } catch (err) {
       console.error("OCR result callback failed:", id, err);
+    }
+  }
+
+  /** 同上。サムネイル生成自体の失敗はbest-effortとして扱い、OCR結果に影響させない。 */
+  function emitThumbnail(id: string, blob: Blob): void {
+    if (disposed) return;
+    try {
+      cb.onThumbnail(id, blob);
+    } catch (err) {
+      console.error("OCR thumbnail callback failed:", id, err);
     }
   }
 
@@ -114,6 +164,17 @@ export function createOcrQueue(
     let patch: RowPatch;
     try {
       canvas = await deps.loadAsCanvas(item.file);
+
+      // 処理済み(縮小済み)canvasから表示用サムネイルを生成して即座に返す(Codexレビュー指摘I1)。
+      // 元画像のObject URLをApp側で保持し続けるとメモリを圧迫するため、ここで作る縮小Blobを
+      // 表示専用のサムネイルとして使う。生成失敗はOCR結果に影響させないbest-effort。
+      try {
+        const thumbnail = await deps.toThumbnailBlob(canvas);
+        emitThumbnail(item.id, thumbnail);
+      } catch (thumbErr) {
+        console.error("Thumbnail generation failed:", item.file.name, thumbErr);
+      }
+
       const firstResult = extractTotal(await engine.recognize(canvas));
 
       let result = firstResult;
@@ -158,7 +219,7 @@ export function createOcrQueue(
     running = true;
     try {
       if (!initialized) {
-        emitStatus("モデル準備中…");
+        emitStatus({ kind: "preparing" });
         try {
           await engine.initialize();
           initialized = true;
@@ -170,14 +231,14 @@ export function createOcrQueue(
             done++;
             emitResult(item.id, failedPatch());
           }
-          emitStatus("モデル準備に失敗しました");
+          emitStatus({ kind: "model-error", message: "モデル準備に失敗しました" });
           return;
         }
       }
       while (pending.length > 0) {
         const item = pending.shift()!;
         done++;
-        emitStatus(`画像 ${done}/${total} 処理中…`);
+        emitStatus({ kind: "processing", current: done, total });
         itemInFlight = true;
         try {
           // engine単位のレーンで排他する。同じengineを共有する別キューインスタンスからの
@@ -187,7 +248,7 @@ export function createOcrQueue(
           itemInFlight = false;
         }
       }
-      emitStatus(total > 0 ? `完了 (${done}/${total})` : "");
+      emitStatus({ kind: "complete", done, total });
     } finally {
       running = false;
       if (pending.length > 0) {
@@ -198,12 +259,17 @@ export function createOcrQueue(
       } else {
         total = 0;
         done = 0;
+        // running===falseかつ後続のkickもない=真に空転状態。dispose()側の待機を解決する
+        // (Codexレビュー指摘I2)。
+        notifyIdle();
       }
     }
   }
 
   return {
     enqueue(id: string, file: File) {
+      // dispose後は新規enqueueを一切受け付けない(Codexレビュー指摘I2)。
+      if (disposed) return;
       // 未処理・処理中のアイテムが無ければ、これは新しいバッチの開始とみなし
       // カウンタをリセットする。完了通知コールバックからの同期的な再入enqueueで
       // 前バッチのdone/totalを引きずり「画像 2/2」のような不自然な表示になる
@@ -224,6 +290,22 @@ export function createOcrQueue(
       for (const item of canceled) {
         emitResult(item.id, failedPatch());
       }
+    },
+    /**
+     * アンマウント等でengineを破棄する前に呼ぶ非同期の後始末(Codexレビュー指摘I2)。
+     *
+     * - 以降の`enqueue()`を拒否する
+     * - 未処理分(pending)を破棄する(コールバックは発火しない)
+     * - 以降、内部で進行中の処理が完了してもコールバックは発火しない(`disposed`ガード)
+     * - 実行中のジョブ(`engine.initialize()`または`engine.recognize()`)が完了するまで待つ
+     *
+     * これらをすべて終えてから解決するため、呼び出し側は
+     * `queue.dispose().finally(() => engine.destroy())`のように安全にengineを破棄できる。
+     */
+    async dispose(): Promise<void> {
+      disposed = true;
+      pending.splice(0);
+      await waitUntilIdle();
     },
   };
 }

@@ -1,23 +1,73 @@
 :root {
-  color-scheme: light dark;
+  /* v1はダークモード対応をスコープ外とし、明示的にライトテーマへ固定する
+     (Codexレビュー指摘I7)。`color-scheme: light dark`のままだと、下記の各状態色は
+     背景のみ固定で前景色を指定していなかったため、端末がダークモードの場合に
+     白系の継承文字色が薄黄色・薄緑背景に載って読めなくなる恐れがあった。 */
+  color-scheme: light;
+  color: #111827;
+  background: #fff;
 }
 
 * { box-sizing: border-box; }
-body { font-family: -apple-system, "Hiragino Sans", sans-serif; margin: 0; }
+body { font-family: -apple-system, "Hiragino Sans", sans-serif; margin: 0; color: #111827; background: #fff; }
 main { padding: 12px; padding-bottom: calc(140px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
 .add-buttons { display: flex; gap: 8px; }
 .payer-group { flex: 1; border: 1px solid #ccc; border-radius: 8px; padding: 8px; }
-.payer-group button { display: block; width: 100%; margin-top: 6px; padding: 10px; font-size: 15px; }
+.payer-group button { display: block; width: 100%; margin-top: 6px; padding: 10px; font-size: 15px; min-height: 44px; }
 .receipt-list { list-style: none; padding: 0; }
 .receipt-row { display: flex; gap: 8px; align-items: flex-start; border-bottom: 1px solid #eee; padding: 8px 0; }
-.thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
-.thumb.zoomed { width: 100%; height: auto; object-fit: contain; }
-.row-main { flex: 1; }
-.amount { font-size: 18px; font-weight: 700; background: none; border: 1px dashed #999; border-radius: 4px; padding: 4px 8px; }
+
+/* サムネイルはbutton包みにしてキーボード操作・aria-expandedを持たせる(Codexレビュー指摘I6)。
+   拡大表示は行のflexレイアウトを壊さないよう、行外オーバーレイ(.thumb-overlay)で行う。 */
+.thumb-button {
+  flex: none; padding: 0; border: none; background: none; border-radius: 4px; overflow: hidden;
+  width: 48px; height: 48px; min-width: 44px; min-height: 44px;
+}
+.thumb { display: block; width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
+.thumb-overlay {
+  position: fixed; inset: 0; z-index: 100; background: rgba(17, 24, 39, 0.9);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+.thumb-overlay-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.thumb-overlay-close {
+  position: absolute; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
+  min-height: 44px; min-width: 44px; padding: 8px 14px; border-radius: 8px; border: none;
+  background: #fff; color: #111827; font-size: 15px;
+}
+
+.row-main { flex: 1; min-width: 0; }
+.amount {
+  font-size: 18px; font-weight: 700; background: none; border: 1px dashed #999; border-radius: 4px;
+  padding: 4px 8px; min-height: 44px; color: #111827;
+}
+.amount-editor { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+/* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大するため明示指定する。
+   scroll-margin-bottomはソフトキーボード出現時に入力欄が隠れないための余白(Codexレビュー指摘I5)。 */
+.amount-editor input {
+  font-size: 16px; min-height: 44px; padding: 4px 8px; border: 1px solid #999; border-radius: 4px;
+  width: 8em; scroll-margin-bottom: 180px;
+}
+.amount-editor button { min-height: 44px; min-width: 44px; padding: 4px 10px; }
+.sign-toggle[aria-pressed="true"] { background: #ffe0e0; border-color: #b00020; color: #7a0016; }
+.amount-error { color: #b00020; margin: 4px 0 0; font-size: 13px; width: 100%; }
+
 .badge { font-size: 12px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
-.badge-needs-review, .badge-failed { background: #fff3cd; border: 1px solid #b8860b; }
-.badge-auto-high, .badge-confirmed, .badge-manual { background: #e6f4ea; border: 1px solid #2e7d32; }
-.status-needs-review, .status-failed { background: #fffbea; }
+.badge-needs-review, .badge-failed { background: #fff3cd; border: 1px solid #b8860b; color: #6b4a00; }
+.badge-auto-high, .badge-confirmed, .badge-manual { background: #e6f4ea; border: 1px solid #2e7d32; color: #1b4d21; }
+.status-needs-review, .status-failed { background: #fffbea; color: #111827; }
+/* 処理中は失敗色(黄)と混同しないよう専用クラスで分離する(Codexレビュー指摘M2)。 */
+.is-processing { background: #eef2ff; color: #111827; }
+
+.candidates button, .row-actions button, .retry-button { min-height: 44px; min-width: 44px; }
+.retry-button { margin-top: 4px; padding: 4px 10px; }
+.row-actions { display: flex; flex-direction: column; gap: 4px; }
+.row-actions button { padding: 4px 8px; }
+
 .error { color: #b00020; }
+.cancel-all { min-height: 44px; padding: 8px 14px; margin: 4px 0; }
+.ocr-model-error button { min-height: 44px; padding: 8px 14px; }
+
 .summary-panel { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 2px solid #333;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }

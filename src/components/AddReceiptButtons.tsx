@@ -3,6 +3,8 @@ import type { Payer } from "../types";
 
 type Props = { onFiles(payer: Payer, files: File[]): void };
 
+const PAYER_LABEL: Record<Payer, string> = { husband: "夫", wife: "妻" };
+
 export function AddReceiptButtons({ onFiles }: Props) {
   const albumHusband = useRef<HTMLInputElement>(null);
   const albumWife = useRef<HTMLInputElement>(null);
@@ -17,16 +19,28 @@ export function AddReceiptButtons({ onFiles }: Props) {
 
   return (
     <section className="add-buttons">
-      <div className="payer-group">
-        <h2>夫のレシート</h2>
-        <button type="button" onClick={() => albumHusband.current?.click()}>アルバムから選ぶ</button>
-        <button type="button" onClick={() => cameraHusband.current?.click()}>カメラで撮る</button>
-      </div>
-      <div className="payer-group">
-        <h2>妻のレシート</h2>
-        <button type="button" onClick={() => albumWife.current?.click()}>アルバムから選ぶ</button>
-        <button type="button" onClick={() => cameraWife.current?.click()}>カメラで撮る</button>
-      </div>
+      {(["husband", "wife"] as const).map((payer) => (
+        <div className="payer-group" key={payer}>
+          <h2>{PAYER_LABEL[payer]}のレシート</h2>
+          {/* 夫妻それぞれの「アルバムから選ぶ」「カメラで撮る」は視覚的なテキストが同一のため、
+              スクリーンリーダーのボタン一覧で対象を判別できない(Codexレビュー指摘I9)。
+              aria-labelで行き先を明示する(表示テキスト自体は変更しない)。 */}
+          <button
+            type="button"
+            aria-label={`${PAYER_LABEL[payer]}のレシートをアルバムから選ぶ`}
+            onClick={() => (payer === "husband" ? albumHusband : albumWife).current?.click()}
+          >
+            アルバムから選ぶ
+          </button>
+          <button
+            type="button"
+            aria-label={`${PAYER_LABEL[payer]}のレシートをカメラで撮る`}
+            onClick={() => (payer === "husband" ? cameraHusband : cameraWife).current?.click()}
+          >
+            カメラで撮る
+          </button>
+        </div>
+      ))}
       <input ref={albumHusband} type="file" accept="image/*" multiple hidden onChange={handle("husband")} />
       <input ref={cameraHusband} type="file" accept="image/*" capture="environment" hidden onChange={handle("husband")} />
       <input ref={albumWife} type="file" accept="image/*" multiple hidden onChange={handle("wife")} />
