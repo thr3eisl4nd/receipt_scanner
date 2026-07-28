@@ -46,15 +46,15 @@ main { padding: 12px; padding-bottom: calc(200px + env(safe-area-inset-bottom));
   padding: 4px 8px; min-height: 44px; color: #111827;
 }
 .amount-editor { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
-/* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大するため明示指定する。
-   scroll-margin-bottomはソフトキーボード出現時に入力欄が隠れないための余白(Codexレビュー指摘I5)。 */
+/* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大するため明示指定する。 */
 .amount-editor input {
   font-size: 16px; min-height: 44px; padding: 4px 8px; border: 1px solid #999; border-radius: 4px;
-  width: 8em; scroll-margin-bottom: 180px;
+  width: 8em;
 }
 .amount-editor button { min-height: 44px; min-width: 44px; padding: 4px 10px; }
 .sign-toggle[aria-pressed="true"] { background: #ffe0e0; border-color: #b00020; color: #7a0016; }
 .amount-error { color: #b00020; margin: 4px 0 0; font-size: 13px; width: 100%; }
+.failure-message { color: #6b4a00; margin: 4px 0 0; font-size: 13px; width: 100%; }
 
 .badge { font-size: 12px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
 .badge-needs-review, .badge-failed { background: #fff3cd; border: 1px solid #b8860b; color: #6b4a00; }
@@ -88,3 +88,40 @@ main { padding: 12px; padding-bottom: calc(200px + env(safe-area-inset-bottom));
 .summary-panel .warn { color: #6b4a00; margin-top: 2px; }
 .summary-panel .panel-actions { display: flex; gap: 8px; margin-top: 8px; }
 .summary-panel .panel-actions button { min-height: 44px; padding: 6px 12px; flex: 1; }
+
+/* ソフトキーボード出現時に入力欄が隠れないための余白(Codexレビュー指摘I5)。
+   従来は`.amount-editor input`だけに付与しており、手動追加フォームには無かった
+   (Codexレビュー最終ゲート指摘I3)。論理プロパティ(縦書き非対応スコープなので
+   実質`scroll-margin-bottom`と同じ)で両方に揃える。 */
+.manual-entry input,
+.manual-entry select,
+.amount-editor input {
+  scroll-margin-block-end: 24px;
+}
+
+/*
+ * iOS Safariでは、ソフトキーボード表示中も画面下部固定の`.summary-panel`が
+ * 表示座標を誤ることが報告されている(WebKit bug 312149 / 311821)。手動入力は
+ * このアプリで必須の復旧経路(§9)なので、金額編集・手動追加フォームのいずれかの
+ * input/selectがフォーカスされている間は固定を解除し、通常のドキュメントフローに
+ * 戻す(Codexレビュー最終ゲート指摘I3)。`:has()`未対応ブラウザでは何もしない
+ * (`@supports`でフィーチャーチェックしているため、その場合は従来通りの固定のまま)。
+ */
+@supports selector(body:has(input:focus)) {
+  body:has(
+    .amount-editor input:focus,
+    .manual-entry input:focus,
+    .manual-entry select:focus
+  ) .summary-panel {
+    position: static;
+  }
+
+  body:has(
+    .amount-editor input:focus,
+    .manual-entry input:focus,
+    .manual-entry select:focus
+  ) main {
+    /* 固定パネル解除中は、パネル分の予約(200px)ではなく通常の余白でよい */
+    padding-bottom: 12px;
+  }
+}

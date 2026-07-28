@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OcrEngine, OcrLine } from "./engine";
 import type { ExtractResult } from "../extract/extractTotal";
 import { createOcrQueue, type OcrQueueDeps, type QueueStatusEvent } from "./queue";
+import { UnsupportedFormatError, ImageTooLargeError, ImageDecodeError } from "../image/preprocess";
 
 // extractTotalは複雑な座標ヒューリスティックを持つ純粋関数なので、queueのテストでは
 // モックして戻り値を直接制御する(queueの直列処理・再試行・結果反映ロジックのみを検証する)。
@@ -19,6 +20,7 @@ function makeDeps(): OcrQueueDeps {
     loadAsCanvas: vi.fn(async () => fakeCanvas()),
     enhanceContrast: vi.fn(() => fakeCanvas()),
     toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+    toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
   };
 }
 
@@ -51,7 +53,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValueOnce(resultOf("auto-high", 1200, [1200]));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -74,7 +76,7 @@ describe("createOcrQueue", () => {
       .mockReturnValueOnce(resultOf("auto-high", 950, [950]));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -97,7 +99,7 @@ describe("createOcrQueue", () => {
       .mockReturnValueOnce(resultOf("auto-high", 700, [700]));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -119,7 +121,7 @@ describe("createOcrQueue", () => {
       .mockReturnValueOnce(resultOf("failed", null, []));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -147,6 +149,7 @@ describe("createOcrQueue", () => {
         return c;
       }),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock
@@ -154,7 +157,7 @@ describe("createOcrQueue", () => {
       .mockReturnValueOnce(resultOf("failed", null, []));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -187,7 +190,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValue(resultOf("auto-high"));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     queue.enqueue("b", new File([""], "b.png"));
 
@@ -207,7 +210,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValue(resultOf("auto-high"));
 
     const onStatus = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus, onResult: vi.fn(), onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus, onResult: vi.fn(), onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() =>
@@ -227,7 +230,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValue(resultOf("auto-high"));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     queue.enqueue("b", new File([""], "b.png"));
     queue.enqueue("c", new File([""], "c.png"));
@@ -243,16 +246,19 @@ describe("createOcrQueue", () => {
     });
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
 
+    // OCR推論(recognize)自体の失敗はfailureKind:"ocr"として区別される(Codexレビュー
+    // 最終ゲート指摘I1: 画像デコード失敗等と同じ「読取失敗」に潰さない)。
     expect(onResult).toHaveBeenCalledWith("a", {
       amountYen: null,
       status: "failed",
       candidates: [],
       processing: false,
+      failureKind: "ocr",
     });
     expect(extractTotalMock).not.toHaveBeenCalled();
   });
@@ -269,7 +275,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValue(resultOf("auto-high", 500, [500]));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png")); // 処理中(gateで停止)
     queue.enqueue("b", new File([""], "b.png")); // 未処理→cancelAllで即失敗確定
     await vi.waitFor(() => expect(engine.recognize).toHaveBeenCalledTimes(1));
@@ -310,7 +316,7 @@ describe("createOcrQueue", () => {
 
     const onResult = vi.fn();
     const onStatus = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     queue.enqueue("b", new File([""], "b.png"));
 
@@ -337,6 +343,7 @@ describe("createOcrQueue", () => {
         return c;
       }),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
     };
     let recognizeCallCount = 0;
     const engine = makeEngine(() => {
@@ -347,7 +354,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValueOnce(resultOf("needs-review", 900, [900]));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -372,12 +379,13 @@ describe("createOcrQueue", () => {
         throw new Error("enhance boom");
       }),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock.mockReturnValueOnce(resultOf("needs-review", 800, [800]));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -401,27 +409,136 @@ describe("createOcrQueue", () => {
       }),
       enhanceContrast: vi.fn(() => fakeCanvas()),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock.mockReturnValue(resultOf("auto-high", 300, [300]));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     queue.enqueue("b", new File([""], "b.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
+
+    // loadAsCanvas失敗は、instanceofで分類できない汎用Error(テストスタブ含む)の場合
+    // "image-decode"にフォールバックする(Codexレビュー最終ゲート指摘I1)。
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: null,
+      status: "failed",
+      candidates: [],
+      processing: false,
+      failureKind: "image-decode",
+    });
+    expect(onResult).toHaveBeenCalledWith("b", {
+      amountYen: 300,
+      status: "auto-high",
+      candidates: [300],
+      processing: false,
+    });
+  });
+
+  // --- Codexレビュー最終ゲート指摘I1(失敗種別の区別)の回帰テスト ---
+
+  it("loadAsCanvasがUnsupportedFormatErrorを投げた場合、failureKind:'unsupported-format'として結果を返す", async () => {
+    const deps: OcrQueueDeps = {
+      loadAsCanvas: vi.fn(async () => {
+        throw new UnsupportedFormatError();
+      }),
+      enhanceContrast: vi.fn(() => fakeCanvas()),
+      toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+    };
+    const engine = makeEngine(() => [line()]);
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.pdf"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
 
     expect(onResult).toHaveBeenCalledWith("a", {
       amountYen: null,
       status: "failed",
       candidates: [],
       processing: false,
+      failureKind: "unsupported-format",
     });
-    expect(onResult).toHaveBeenCalledWith("b", {
-      amountYen: 300,
-      status: "auto-high",
-      candidates: [300],
+    // 未対応形式はOCR推論まで到達しない(サムネイル/プレビュー生成も行われない)
+    expect(deps.toThumbnailBlob).not.toHaveBeenCalled();
+    expect(deps.toPreviewBlob).not.toHaveBeenCalled();
+    expect(extractTotalMock).not.toHaveBeenCalled();
+  });
+
+  it("loadAsCanvasがImageTooLargeErrorを投げた場合、failureKind:'image-too-large'として結果を返す", async () => {
+    const deps: OcrQueueDeps = {
+      loadAsCanvas: vi.fn(async () => {
+        throw new ImageTooLargeError();
+      }),
+      enhanceContrast: vi.fn(() => fakeCanvas()),
+      toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+    };
+    const engine = makeEngine(() => [line()]);
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "huge.jpg"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: null,
+      status: "failed",
+      candidates: [],
+      processing: false,
+      failureKind: "image-too-large",
+    });
+  });
+
+  it("loadAsCanvasがImageDecodeErrorを投げた場合も、failureKind:'image-decode'として結果を返す", async () => {
+    const deps: OcrQueueDeps = {
+      loadAsCanvas: vi.fn(async () => {
+        throw new ImageDecodeError();
+      }),
+      enhanceContrast: vi.fn(() => fakeCanvas()),
+      toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+    };
+    const engine = makeEngine(() => [line()]);
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "broken.jpg"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: null,
+      status: "failed",
+      candidates: [],
+      processing: false,
+      failureKind: "image-decode",
+    });
+  });
+
+  it("モデル初期化失敗によるfailedPatchにはfailureKindを付与しない(既に専用のmodel-errorバナーで原因を説明済みのため)", async () => {
+    const deps = makeDeps();
+    const engine: OcrEngine = {
+      initialize: vi.fn(async () => {
+        throw new Error("init boom");
+      }),
+      recognize: vi.fn(async () => [line()]),
+      destroy: vi.fn(async () => undefined),
+    };
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: null,
+      status: "failed",
+      candidates: [],
       processing: false,
     });
   });
@@ -439,7 +556,7 @@ describe("createOcrQueue", () => {
         queue.enqueue("b", new File([""], "b.png"));
       }
     });
-    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
@@ -459,7 +576,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValue(resultOf("auto-high", 200, [200]));
 
     const onStatus = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus, onResult: vi.fn(), onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus, onResult: vi.fn(), onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     queue.enqueue("b", new File([""], "b.png"));
     await vi.waitFor(() => expect(engine.recognize).toHaveBeenCalledTimes(1));
@@ -479,6 +596,7 @@ describe("createOcrQueue", () => {
       loadAsCanvas: vi.fn(async () => original),
       enhanceContrast: vi.fn(() => enhancedCanvas),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
     };
     const seenCanvases: HTMLCanvasElement[] = [];
     const engine = makeEngine((canvas) => {
@@ -490,7 +608,7 @@ describe("createOcrQueue", () => {
       .mockReturnValueOnce(resultOf("auto-high"));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
@@ -504,7 +622,7 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValue(resultOf("auto-high"));
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
 
@@ -535,7 +653,7 @@ describe("createOcrQueue", () => {
       .mockReturnValue(resultOf("auto-high")); // Aの2回目・Bの1回目とも
 
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     queue.enqueue("b", new File([""], "b.png"));
 
@@ -569,6 +687,7 @@ describe("createOcrQueue", () => {
         }),
         enhanceContrast: vi.fn(() => fakeCanvas()),
         toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+        toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
       };
     }
 
@@ -587,8 +706,8 @@ describe("createOcrQueue", () => {
     const depsB = makeTaggedDeps("b");
     const onResultA = vi.fn();
     const onResultB = vi.fn();
-    const queue1 = createOcrQueue(engine, { onStatus: vi.fn(), onResult: onResultA, onThumbnail: vi.fn() }, depsA);
-    const queue2 = createOcrQueue(engine, { onStatus: vi.fn(), onResult: onResultB, onThumbnail: vi.fn() }, depsB);
+    const queue1 = createOcrQueue(engine, { onStatus: vi.fn(), onResult: onResultA, onThumbnail: vi.fn(), onPreview: vi.fn() }, depsA);
+    const queue2 = createOcrQueue(engine, { onStatus: vi.fn(), onResult: onResultB, onThumbnail: vi.fn(), onPreview: vi.fn() }, depsB);
 
     queue1.enqueue("a", new File([""], "a.png"));
     queue2.enqueue("b", new File([""], "b.png"));
@@ -622,7 +741,7 @@ describe("createOcrQueue", () => {
       if (event.kind === "preparing") throw new Error("onStatus boom");
     });
     const onResult = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     try {
@@ -650,7 +769,7 @@ describe("createOcrQueue", () => {
       seen.push(id);
       if (id === "a") throw new Error("onResult boom");
     });
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     queue.enqueue("b", new File([""], "b.png"));
 
@@ -675,7 +794,7 @@ describe("createOcrQueue", () => {
         queue.enqueue("b", new File([""], "b.png"));
       }
     });
-    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
@@ -693,8 +812,9 @@ describe("createOcrQueue", () => {
 
   // --- Codexレビュー指摘I1(サムネイル)・I2(dispose)の回帰テスト ---
 
-  it("loadAsCanvas直後にonThumbnailで縮小Blobを返す(OCR結果より前に届く)", async () => {
+  it("loadAsCanvas直後にonThumbnail・onPreviewの両方で縮小Blobを返す(OCR結果より前に届く。Codexレビュー最終ゲート指摘I2でpreviewを追加)", async () => {
     const thumbBlob = new Blob(["thumb"]);
+    const previewBlob = new Blob(["preview"]);
     const order: string[] = [];
     const deps: OcrQueueDeps = {
       loadAsCanvas: vi.fn(async () => {
@@ -706,6 +826,10 @@ describe("createOcrQueue", () => {
         order.push("thumbnail");
         return thumbBlob;
       }),
+      toPreviewBlob: vi.fn(async () => {
+        order.push("preview");
+        return previewBlob;
+      }),
     };
     const engine = makeEngine(() => {
       order.push("recognize");
@@ -714,14 +838,16 @@ describe("createOcrQueue", () => {
     extractTotalMock.mockReturnValue(resultOf("auto-high"));
 
     const onThumbnail = vi.fn(() => order.push("onThumbnail"));
+    const onPreview = vi.fn(() => order.push("onPreview"));
     const onResult = vi.fn(() => order.push("onResult"));
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail, onPreview }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
 
     expect(onThumbnail).toHaveBeenCalledWith("a", thumbBlob);
-    expect(order).toEqual(["load", "thumbnail", "onThumbnail", "recognize", "onResult"]);
+    expect(onPreview).toHaveBeenCalledWith("a", previewBlob);
+    expect(order).toEqual(["load", "thumbnail", "onThumbnail", "preview", "onPreview", "recognize", "onResult"]);
   });
 
   it("サムネイル生成が失敗してもOCR結果には影響しない(best-effort)", async () => {
@@ -731,6 +857,7 @@ describe("createOcrQueue", () => {
       toThumbnailBlob: vi.fn(async () => {
         throw new Error("thumbnail boom");
       }),
+      toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock.mockReturnValue(resultOf("auto-high", 100, [100]));
@@ -738,13 +865,41 @@ describe("createOcrQueue", () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const onResult = vi.fn();
     const onThumbnail = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail, onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
 
     try {
       await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
       expect(onResult).toHaveBeenCalledWith("a", expect.objectContaining({ amountYen: 100 }));
       expect(onThumbnail).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("プレビュー生成が失敗してもOCR結果には影響しない(best-effort、Codexレビュー最終ゲート指摘I2)", async () => {
+    const deps: OcrQueueDeps = {
+      loadAsCanvas: vi.fn(async () => fakeCanvas()),
+      enhanceContrast: vi.fn(() => fakeCanvas()),
+      toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
+      toPreviewBlob: vi.fn(async () => {
+        throw new Error("preview boom");
+      }),
+    };
+    const engine = makeEngine(() => [line()]);
+    extractTotalMock.mockReturnValue(resultOf("auto-high", 100, [100]));
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const onResult = vi.fn();
+    const onPreview = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    try {
+      await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+      expect(onResult).toHaveBeenCalledWith("a", expect.objectContaining({ amountYen: 100 }));
+      expect(onPreview).not.toHaveBeenCalled();
       expect(consoleErrorSpy).toHaveBeenCalled();
     } finally {
       consoleErrorSpy.mockRestore();
@@ -763,7 +918,7 @@ describe("createOcrQueue", () => {
 
     const onResult = vi.fn();
     const onStatus = vi.fn();
-    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus, onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
     queue.enqueue("a", new File([""], "a.png"));
     await vi.waitFor(() => expect(engine.recognize).toHaveBeenCalledTimes(1));
 
@@ -793,7 +948,7 @@ describe("createOcrQueue", () => {
   it("何も処理していない(真に空転)状態でのdispose()は即座に解決する", async () => {
     const deps = makeDeps();
     const engine = makeEngine(() => [line()]);
-    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult: vi.fn(), onThumbnail: vi.fn() }, deps);
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult: vi.fn(), onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
 
     let settled = false;
     await queue.dispose().then(() => {

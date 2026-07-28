@@ -53,9 +53,14 @@ describe("parseYen", () => {
     expect(parseYen("99999999999999999999")).toBe("invalid");
   });
 
-  test("安全整数の境界値(Number.MAX_SAFE_INTEGER)ちょうどは有効、+1は'invalid'(Codexレビュー再指摘M3)", () => {
-    expect(parseYen(String(Number.MAX_SAFE_INTEGER))).toBe(Number.MAX_SAFE_INTEGER);
-    expect(parseYen(String(Number.MAX_SAFE_INTEGER + 1))).toBe("invalid");
+  test("1,000万円ちょうどは有効、1円でも超えると'invalid'(Codexレビュー最終ゲート指摘Minor: 手動入力にOCRと同じ上限(MAX_YEN)を適用)", () => {
+    // 従来はNumber.MAX_SAFE_INTEGERまで許可していたが、複数行合算がsafe integerを
+    // 超えうる懸念(Codexレビュー最終ゲート指摘)を受け、OCR抽出(src/extract/normalize.ts
+    // のMAX_YEN=1,000万円)と同じ上限を手動入力側にも適用した。
+    expect(parseYen("10000000")).toBe(10_000_000);
+    expect(parseYen("-10000000")).toBe(-10_000_000);
+    expect(parseYen("10000001")).toBe("invalid");
+    expect(parseYen(String(Number.MAX_SAFE_INTEGER))).toBe("invalid");
   });
 
   test("マイナス記号のみ・符号の重複は'invalid'を返す", () => {

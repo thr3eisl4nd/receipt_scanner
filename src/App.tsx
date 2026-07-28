@@ -102,6 +102,16 @@ export default function App() {
         if (row.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl); // 置換時は旧URLを解放
         dispatch({ type: "updateRow", id: rowId, patch: { thumbnailUrl: url } });
       },
+      // 拡大表示用プレビュー(Codexレビュー最終ゲート指摘I2)。onThumbnailと全く同じ
+      // 差し戻し・解放パターンを`previewUrl`側にも適用する。
+      onPreview: (jobId, blob) => {
+        const resolved = resolveActiveRow(jobId);
+        if (!resolved) return;
+        const { rowId, row } = resolved;
+        const url = URL.createObjectURL(blob);
+        if (row.previewUrl) URL.revokeObjectURL(row.previewUrl); // 置換時は旧URLを解放
+        dispatch({ type: "updateRow", id: rowId, patch: { previewUrl: url } });
+      },
       // OCR結果はapplyOcrResultで反映する。updateRowと違い、ユーザーが既に手修正して
       // processing:falseになった行には適用されない(Codexレビュー指摘C1: 遅延OCR結果に
       // よる手修正の無警告上書き防止)。加えて、jobIdが「この行の現在アクティブなjob」と
@@ -121,9 +131,11 @@ export default function App() {
     queueRef.current = queue;
     return () => {
       queueRef.current = null;
-      // アンマウント時、表示中サムネイルのObject URLを全解放する(Codexレビュー指摘I1)。
+      // アンマウント時、表示中サムネイル・プレビューのObject URLを全解放する
+      // (Codexレビュー指摘I1・最終ゲート指摘I2)。
       for (const row of rowsRef.current) {
         if (row.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl);
+        if (row.previewUrl) URL.revokeObjectURL(row.previewUrl);
       }
       // 新規enqueue拒否→pending破棄→コールバック停止→実行中ジョブの完了待ち、を経てから
       // engineを破棄する(Codexレビュー指摘I2: cancelAll()は未処理分しか止めないため、
@@ -195,6 +207,7 @@ export default function App() {
   const onRemove = (id: string) => {
     const row = state.rows.find((r) => r.id === id);
     if (row?.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl);
+    if (row?.previewUrl) URL.revokeObjectURL(row.previewUrl);
     retryFilesRef.current.delete(id);
     invalidateJobForRow(id);
     dispatch({ type: "removeRow", id });
@@ -263,13 +276,30 @@ export default function App() {
       return;
     }
     queueRef.current?.cancelAll();
-    for (const r of state.rows) if (r.thumbnailUrl) URL.revokeObjectURL(r.thumbnailUrl);
+    for (const r of state.rows) {
+      if (r.thumbnailUrl) URL.revokeObjectURL(r.thumbnailUrl);
+      if (r.previewUrl) URL.revokeObjectURL(r.previewUrl);
+    }
     retryFilesRef.current.clear();
     seenFiles.current.clear();
     dispatch({ type: "clearMonth", month: currentMonth() });
   };
 
   const hasPendingWork = state.rows.some((r) => r.processing);
+  // OCR完了後にneeds-review/failed行が残っている場合、ステータス領域(aria-live)に
+  // 「金額確認待ち N件」を表示する(Codexレビュー最終ゲート指摘Minor#3・設計ドキュメント
+  // §5.2)。固定パネル側の「⚠ 未確認 N件」(SummaryPanel)は常時表示の非ライブ領域だが、
+  // こちらはOCR完了の一連の流れ(準備中→処理中→…)の続きとしてライブ領域で通知する。
+  const reviewPendingCount = computeTotals(state.rows).unconfirmed;
+  const ocrStatusText = !hasPendingWork && reviewPendingCount > 0
+    ? `金額確認待ち ${reviewPendingCount}件`
+    : ocrEvent?.kind === "preparing"
+      ? "モデル準備中…"
+      : ocrEvent?.kind === "processing"
+        ? `画像 ${ocrEvent.current}/${ocrEvent.total} 処理中…`
+        : ocrEvent?.kind === "complete" && ocrEvent.total > 0
+          ? `完了 (${ocrEvent.done}/${ocrEvent.total})`
+          : "";
 
   return (
     <main>
@@ -283,9 +313,7 @@ export default function App() {
         </div>
       ) : (
         <p role="status" aria-live="polite" aria-atomic="true" className="ocr-status">
-          {ocrEvent?.kind === "preparing" && "モデル準備中…"}
-          {ocrEvent?.kind === "processing" && `画像 ${ocrEvent.current}/${ocrEvent.total} 処理中…`}
-          {ocrEvent?.kind === "complete" && ocrEvent.total > 0 && `完了 (${ocrEvent.done}/${ocrEvent.total})`}
+          {ocrStatusText}
         </p>
       )}
       {hasPendingWork && (
@@ -294,10 +322,11 @@ export default function App() {
 
       {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
       <ul className="receipt-list">
-        {state.rows.map((row) => (
+        {state.rows.map((row, index) => (
           <ReceiptRow
             key={row.id}
             row={row}
+            rowNumber={index + 1}
             canRetry={retryFilesRef.current.has(row.id)}
             onPatch={(id, patch) => {
               releaseRetryFileIfResolved(id, patch);

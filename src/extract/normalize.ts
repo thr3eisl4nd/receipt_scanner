@@ -1,4 +1,7 @@
-const MAX_YEN = 10_000_000;
+// 手動入力(src/moneyInput.ts)にも同じ上限を適用するためexportする
+// (Codexレビュー最終ゲート指摘Minor: 手動入力にはこれまで上限がなく、
+// 複数行合算がsafe integerを超えうる可能性があった)。
+export const MAX_YEN = 10_000_000;
 
 /** 金額らしき1トークンを円整数へ。金額でなければnull。 */
 export function normalizeMoneyToken(token: string): number | null {

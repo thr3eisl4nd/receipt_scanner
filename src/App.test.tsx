@@ -4,6 +4,7 @@ import { render, screen, fireEvent, within, cleanup } from "@testing-library/rea
 import type { OcrEngine } from "./ocr/engine";
 import type { RowPatch } from "./state/reducer";
 import type { QueueStatusEvent } from "./ocr/queue";
+import type { FailureKind } from "./types";
 import { STORAGE_KEY } from "./state/storage";
 import App from "./App";
 
@@ -47,6 +48,7 @@ vi.mock("./ocr/queue", () => ({
 type Cb = {
   onStatus(event: QueueStatusEvent): void;
   onThumbnail(id: string, blob: Blob): void;
+  onPreview(id: string, blob: Blob): void;
   onResult(id: string, patch: RowPatch): void;
 };
 let capturedCb: Cb | null = null;
@@ -359,7 +361,7 @@ describe("App", () => {
     const input = screen.getByLabelText("金額(円)") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "2000" } });
 
-    const deleteButton = screen.getByRole("button", { name: "レシート 1を削除" });
+    const deleteButton = screen.getByRole("button", { name: "レシート 1（1行目）を削除" });
     // Tabで削除ボタンへ移動したことを模したblur(relatedTargetが編集欄の外の実要素)
     fireEvent.blur(input, { relatedTarget: deleteButton });
 
@@ -433,7 +435,7 @@ describe("App", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "拡大画像を閉じる" }));
     // 拡大中も行の他の操作(削除・金額)は変わらず操作できる(旧実装は行内width:100%で
     // レイアウトが壊れていた。Codexレビュー指摘I6)
-    expect(screen.getByRole("button", { name: "レシート 1を削除" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "レシート 1（1行目）を削除" })).toBeTruthy();
     expect(screen.getByRole("button", { name: amountEditLabel("レシート 1") })).toBeTruthy();
 
     // Escapeキーでも閉じられ、閉じるとサムネイルボタンへフォーカスが戻る(Codexレビュー再指摘I5)
@@ -446,6 +448,77 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("dialog", { name: "レシート 1の拡大画像" }));
     expect(thumbButton.getAttribute("aria-expanded")).toBe("false");
   });
+
+  it("拡大オーバーレイはpreviewUrlが届くとthumbnailUrlより優先して表示し、previewUrl未着時はthumbnailUrlにフォールバックする(Codexレビュー最終ゲート指摘I2)", async () => {
+    const createSpy = vi.spyOn(URL, "createObjectURL");
+    try {
+      const { container } = render(<App />);
+      const fileInputs = container.querySelectorAll('input[type="file"]');
+      selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+      const [id] = enqueueMock.mock.calls[0] as [string, File];
+
+      act(() => {
+        capturedCb!.onThumbnail(id, new Blob(["thumb"]));
+      });
+      const thumbnailUrl = createSpy.mock.results[0].value as string;
+
+      const thumbButton = await screen.findByRole("button", { name: "レシート 1の画像を拡大" });
+      fireEvent.click(thumbButton);
+      // previewUrl未着時はthumbnailUrlにフォールバックする
+      expect((document.querySelector(".thumb-overlay-img") as HTMLImageElement).getAttribute("src")).toBe(
+        thumbnailUrl,
+      );
+      fireEvent.click(screen.getByRole("dialog", { name: "レシート 1の拡大画像" })); // 一旦閉じる
+
+      act(() => {
+        capturedCb!.onPreview(id, new Blob(["preview"]));
+      });
+      const previewUrl = createSpy.mock.results[1].value as string;
+      expect(previewUrl).not.toBe(thumbnailUrl);
+
+      // previewUrlが届いた後は、拡大時にそちらが優先表示される
+      fireEvent.click(thumbButton);
+      expect((document.querySelector(".thumb-overlay-img") as HTMLImageElement).getAttribute("src")).toBe(
+        previewUrl,
+      );
+    } finally {
+      createSpy.mockRestore();
+    }
+  });
+
+  const failureKindCases: Array<{ failureKind: FailureKind; message: string; canRetry: boolean }> = [
+    { failureKind: "image-decode", message: "画像を読み込めません。JPEGまたはPNGで追加してください", canRetry: false },
+    { failureKind: "unsupported-format", message: "この画像形式には対応していません", canRetry: false },
+    { failureKind: "image-too-large", message: "画像が大きすぎます。縮小してから追加してください", canRetry: false },
+    { failureKind: "ocr", message: "文字を読み取れませんでした。金額を手入力してください", canRetry: true },
+  ];
+
+  for (const testCase of failureKindCases) {
+    it(`failureKind:"${testCase.failureKind}"は「${testCase.message}」(role=alert)を表示し、再試行ボタンは${testCase.canRetry ? "維持する" : "出さない(同じFileを再試行しても同じ結果になるため)"}(Codexレビュー最終ゲート指摘I1)`, async () => {
+      const { container } = render(<App />);
+      const fileInputs = container.querySelectorAll('input[type="file"]');
+      selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+      const [id] = enqueueMock.mock.calls[0] as [string, File];
+
+      act(() => {
+        capturedCb!.onResult(id, {
+          amountYen: null,
+          status: "failed",
+          candidates: [],
+          processing: false,
+          failureKind: testCase.failureKind,
+        });
+      });
+
+      const row = container.querySelector(".receipt-row") as HTMLElement;
+      expect(within(row).getByRole("alert").textContent).toBe(testCase.message);
+      if (testCase.canRetry) {
+        expect(within(row).getByRole("button", { name: "レシート 1を再試行" })).toBeTruthy();
+      } else {
+        expect(within(row).queryByRole("button", { name: "レシート 1を再試行" })).toBeNull();
+      }
+    });
+  }
 
   it("処理中の行はis-processingクラスになり、failed系の色クラスとは分離される(Codexレビュー指摘M2)", () => {
     const { container } = render(<App />);
@@ -552,7 +625,24 @@ describe("App", () => {
     expect(screen.getByRole("status").textContent).toBe("完了 (3/3)");
   });
 
-  it("夫⇄妻の切り替え、および削除ボタンで行を除去できる(削除時はサムネイルURLも解放)", async () => {
+  it("OCR完了後にneeds-review/failed行が残っている場合、ステータス領域(aria-live)に「金額確認待ち N件」を表示する(Codexレビュー最終ゲート指摘Minor#3・設計ドキュメント§5.2)", async () => {
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["b"], "b.png"));
+    const [idA] = enqueueMock.mock.calls[0] as [string, File];
+    const [idB] = enqueueMock.mock.calls[1] as [string, File];
+
+    act(() => {
+      capturedCb!.onResult(idA, { amountYen: 900, status: "needs-review", candidates: [900, 950], processing: false });
+      capturedCb!.onResult(idB, { amountYen: null, status: "failed", candidates: [], processing: false });
+      capturedCb!.onStatus({ kind: "complete", done: 2, total: 2 });
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("金額確認待ち 2件");
+  });
+
+  it("夫⇄妻の切り替え、および削除ボタンで行を除去できる(削除時はサムネイル・プレビューURLも解放)", async () => {
     const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
     try {
       const { container } = render(<App />);
@@ -563,6 +653,7 @@ describe("App", () => {
       const [id] = enqueueMock.mock.calls[0] as [string, File];
       act(() => {
         capturedCb!.onThumbnail(id, new Blob(["x"]));
+        capturedCb!.onPreview(id, new Blob(["x-preview"]));
       });
       await screen.findByRole("button", { name: "レシート 1の画像を拡大" });
 
@@ -574,7 +665,8 @@ describe("App", () => {
 
       fireEvent.click(within(row).getByText("削除"));
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
-      expect(revokeSpy).toHaveBeenCalledTimes(1);
+      // サムネイル用・プレビュー用の2件のObject URLが解放される(Codexレビュー指摘I1・最終ゲート指摘I2)
+      expect(revokeSpy).toHaveBeenCalledTimes(2);
     } finally {
       revokeSpy.mockRestore();
     }
@@ -587,13 +679,29 @@ describe("App", () => {
     selectFile(fileInputs[0] as HTMLInputElement, new File(["b"], "b.png"));
     expect(container.querySelectorAll(".receipt-row")).toHaveLength(2);
 
-    expect(screen.getByRole("button", { name: "レシート 1を削除" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "レシート 2を削除" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "レシート 1を妻の支払いへ変更" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "レシート 2を妻の支払いへ変更" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "レシート 1（1行目）を削除" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "レシート 2（2行目）を削除" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "レシート 1（1行目）を妻の支払いへ変更" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "レシート 2（2行目）を妻の支払いへ変更" })).toBeTruthy();
   });
 
-  it("アンマウント時にqueue.dispose()を待ってからengineを破棄し、残っているサムネイルURLを全解放する(Codexレビュー指摘I2)", async () => {
+  it("同名の手動行が複数あっても、行番号によって削除ボタンのアクセシブルネームが一意になる(Codexレビュー最終ゲート指摘Minor#2)", () => {
+    // 手動追加は行の名前をユーザーが自由入力するため、「家賃」を2回追加する等で
+    // row.labelだけでは削除ボタンのアクセシブルネームが衝突しうる。行番号を含めることで
+    // 一意性を保証する。
+    render(<App />);
+    for (let i = 0; i < 2; i++) {
+      fireEvent.change(screen.getByLabelText("支出の名前"), { target: { value: "家賃" } });
+      fireEvent.change(screen.getByLabelText("追加する金額(円)"), { target: { value: "80000" } });
+      fireEvent.click(screen.getByRole("button", { name: "追加" }));
+    }
+
+    expect(screen.getAllByText("家賃")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "家賃（1行目）を削除" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "家賃（2行目）を削除" })).toBeTruthy();
+  });
+
+  it("アンマウント時にqueue.dispose()を待ってからengineを破棄し、残っているサムネイル・プレビューURLを全解放する(Codexレビュー指摘I2・最終ゲート指摘I2)", async () => {
     const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
     try {
       const { container, unmount } = render(<App />);
@@ -602,12 +710,15 @@ describe("App", () => {
       selectFile(fileInputs[2] as HTMLInputElement, new File(["b"], "b.png"));
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(2);
 
-      // 両行にサムネイルが届いた状態にする(I1: 追加直後はthumbnailUrlを持たない)
+      // 両行にサムネイル・プレビューが届いた状態にする(I1: 追加直後はthumbnailUrlを
+      // 持たない。最終ゲート指摘I2: previewUrlも同様)
       const [idA] = enqueueMock.mock.calls[0] as [string, File];
       const [idB] = enqueueMock.mock.calls[1] as [string, File];
       act(() => {
         capturedCb!.onThumbnail(idA, new Blob(["a"]));
         capturedCb!.onThumbnail(idB, new Blob(["b"]));
+        capturedCb!.onPreview(idA, new Blob(["preview-a"]));
+        capturedCb!.onPreview(idB, new Blob(["preview-b"]));
       });
 
       unmount();
@@ -617,8 +728,8 @@ describe("App", () => {
       // 止めないため、実行中のONNXセッションと競合したままengineを破棄していた旧実装の
       // 回帰テスト。Codexレビュー指摘I2)
       await vi.waitFor(() => expect(engineDestroyMock).toHaveBeenCalledTimes(1));
-      // アンマウント時のクリーンアップで2件分のサムネイルURLが解放される
-      expect(revokeSpy).toHaveBeenCalledTimes(2);
+      // アンマウント時のクリーンアップで2件分のサムネイルURL+2件分のプレビューURLが解放される
+      expect(revokeSpy).toHaveBeenCalledTimes(4);
     } finally {
       revokeSpy.mockRestore();
     }
@@ -738,6 +849,7 @@ describe("App", () => {
       const [id] = enqueueMock.mock.calls[0] as [string, File];
       act(() => {
         capturedCb!.onThumbnail(id, new Blob(["thumb"]));
+        capturedCb!.onPreview(id, new Blob(["preview"]));
         capturedCb!.onResult(id, { amountYen: 1000, status: "auto-high", candidates: [], processing: false });
       });
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
@@ -750,8 +862,8 @@ describe("App", () => {
 
       // 全行クリアされる
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
-      // 表示中だったサムネイルのObject URLが解放される
-      expect(revokeSpy).toHaveBeenCalledTimes(1);
+      // 表示中だったサムネイル・プレビューのObject URLが解放される(Codexレビュー指摘I1・最終ゲート指摘I2)
+      expect(revokeSpy).toHaveBeenCalledTimes(2);
 
       // localStorageには旧行データを含まない、新しい(空の)月の状態が保存される
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) as string);

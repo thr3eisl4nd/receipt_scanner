@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Payer, Row } from "../types";
-import { parseYen } from "./ReceiptRow";
+import { parseYenInput, toggleYenSign, isNegativeYenInput } from "../moneyInput";
 
 type Props = { onAdd(row: Row): void };
 
@@ -8,11 +8,14 @@ type Props = { onAdd(row: Row): void };
  * レシートのない支出(家賃・光熱費等)を「名前+金額+誰が払ったか」で追加するフォーム
  * (設計ドキュメント§5.4)。
  *
- * 金額の解釈・検証は`ReceiptRow`の`parseYen`をそのまま流用する(Task 10オーケストレーター
- * 指示: ブリーフの`Number(amount.replace(/[^-\d]/g, ""))`方式はTask 9レビューI3で
- * 「除去してから解釈」の危険性を指摘され却下済みのパターンのため使わない)。
+ * 金額の解釈・検証は`ReceiptRow`と共通の`src/moneyInput.ts`をそのまま流用する
+ * (Task 10オーケストレーター指示: ブリーフの`Number(amount.replace(/[^-\d]/g, ""))`方式は
+ * Task 9レビューI3で「除去してから解釈」の危険性を指摘され却下済みのパターンのため使わない。
+ * Codexレビュー最終ゲート指摘Minor#1: 従来は`ReceiptRow`コンポーネントから直接importして
+ * いたが、コンポーネント間の不自然な依存を解消するため共通モジュールへ切り出した)。
  * これにより全角数字・カンマ区切り・¥/円記号を同じ書式ルールで受理し、不正な入力
  * (例: "12abc34")を黙って別の金額として解釈せず編集を維持したままエラー表示できる。
+ * 上限もOCRと同じ1,000万円(`MAX_YEN`)を適用する。
  */
 /** どちらの入力欄のエラーかを保持する(Codexレビュー指摘: 単一のerror文字列だけだと、
  *  名前エラー時にも金額欄側にaria-invalid/aria-describedbyを出してしまい、
@@ -34,7 +37,7 @@ export function ManualEntryForm({ onAdd }: Props) {
       setError({ field: "label", message: "名前を入力してください" });
       return;
     }
-    const parsed = parseYen(amount);
+    const parsed = parseYenInput(amount);
     if (parsed === "invalid" || parsed === null) {
       setError({ field: "amount", message: "金額は数字で入力してください(例: 1200 / -300)" });
       return;
@@ -53,20 +56,13 @@ export function ManualEntryForm({ onAdd }: Props) {
     setError(null);
   };
 
-  // parseYenが許可する書式は「¥(任意)→-(任意)→数字」の順。ReceiptRowのtoggleSignと
-  // 同じロジックで、¥プレフィックスの直後に符号を置く(先頭に単純に"-"を足し引きすると
-  // "¥1,234"入力時に"-¥1,234"という不正な並びを作ってしまう)。
+  // 符号切替・負数判定はReceiptRowと共通の実装(src/moneyInput.ts)を使う
+  // (Codexレビュー最終ゲート指摘Minor#1: コンポーネント間の重複解消)。
   const toggleSign = () => {
     setError(null);
-    setAmount((v) => {
-      const prefixMatch = /^[¥￥]\s*/.exec(v);
-      const prefix = prefixMatch ? prefixMatch[0] : "";
-      const rest = v.slice(prefix.length);
-      const toggled = rest.startsWith("-") ? rest.slice(1) : `-${rest}`;
-      return `${prefix}${toggled}`;
-    });
+    setAmount((v) => toggleYenSign(v));
   };
-  const isNegative = /^[¥￥]?\s*-/.test(amount);
+  const isNegative = isNegativeYenInput(amount);
 
   return (
     <form className="manual-entry" onSubmit={submit}>

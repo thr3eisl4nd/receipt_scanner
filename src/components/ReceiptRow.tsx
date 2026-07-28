@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type PointerEvent } from "react";
-import type { Row } from "../types";
+import type { FailureKind, Row } from "../types";
 import type { RowPatch } from "../state/reducer";
+import { parseYenInput, toggleYenSign, isNegativeYenInput } from "../moneyInput";
 
 const STATUS_LABEL: Record<Row["status"], string> = {
   "auto-high": "自動読取",
@@ -11,34 +12,36 @@ const STATUS_LABEL: Record<Row["status"], string> = {
 };
 
 /**
- * 金額入力の正規化+検証(Codexレビュー指摘I3)。
- *
- * 従来は「数字/マイナス以外を除去してから解釈する」実装だったため、`1.5`→`15`、
- * `12abc34`→`1234`のように入力ミスがまったく別の金額として黙って確定してしまう
- * 危険があった。当初の修正版もNFKC正規化後に許可文字(カンマ・空白・円記号)を
- * 「文字列中のどこからでも」除去してから検証しており、`"円"`単体→null(未入力扱い)、
- * `"1,00"`→100、`"1 2"`→12のように、依然として一部の入力ミスを黙って解釈して
- * しまう穴が残っていた(Codexレビュー再指摘I3)。ここでは許可する書式そのものを
- * 正規表現で構造的に検証し、部分一致除去はしない。
+ * 失敗原因ごとの案内文(Codexレビュー最終ゲート指摘I1)。role="alert"で表示し、
+ * 「読取失敗」の一律表示では区別できなかった回復手段をユーザーへ示す。
  */
-export function parseYen(raw: string): number | null | "invalid" {
-  const value = raw.normalize("NFKC").trim();
-  if (value === "") return null;
+const FAILURE_MESSAGE: Record<FailureKind, string> = {
+  "image-decode": "画像を読み込めません。JPEGまたはPNGで追加してください",
+  "unsupported-format": "この画像形式には対応していません",
+  "image-too-large": "画像が大きすぎます。縮小してから追加してください",
+  ocr: "文字を読み取れませんでした。金額を手入力してください",
+};
 
-  // 許可する書式: 任意の先頭¥(空白可)、任意の-、"1234"のような数字の並び、または
-  // "1,234"/"12,345,678"のようにカンマ区切りが3桁ごとに正しく入っている数字、
-  // 任意の末尾円(空白可)。これ以外(記号だけ・桁区切りの誤り・数字の途中に
-  // 空白や文字が混ざる等)はすべて"invalid"として拒否する。
-  const match = /^(?:¥\s*)?(-?)(\d+|\d{1,3}(?:,\d{3})+)\s*円?$/.exec(value);
-  if (!match) return "invalid";
-
-  const parsed = Number(`${match[1]}${match[2].replaceAll(",", "")}`);
-  if (!Number.isSafeInteger(parsed)) return "invalid";
-  return parsed === 0 ? 0 : parsed; // "-0"の負のゼロを正のゼロへ正規化する(Codexレビュー再指摘Minor)
+/**
+ * このfailureKindで「同じFileを再試行」する意味があるか。
+ * 画像デコード失敗・未対応形式・巨大画像は、同じFileを再度読み込ませても
+ * 決定的に同じ結果になるため再試行ボタンを出さない(Codexレビュー指摘I1: 原因別の
+ * 回復導線)。OCR推論の失敗(ocr)や、failureKind未設定(モデル初期化失敗等の
+ * 旧来経路)は再試行に意味があるため引き続き表示する。
+ */
+function canRetryFailureKind(failureKind: FailureKind | undefined): boolean {
+  return failureKind === undefined || failureKind === "ocr";
 }
+
+/** `src/moneyInput.ts`の`parseYenInput`の別名エクスポート(Codexレビュー指摘対応でユーティリティを
+ *  共通化した後も、既存テスト・呼び出し元との互換のためこの名前を維持する)。 */
+export const parseYen = parseYenInput;
 
 type Props = {
   row: Row;
+  /** 一覧内での表示順(1始まり)。同名の手動行が複数あってもaria-labelを一意にするために使う
+   *  (Codexレビュー最終ゲート指摘Minor#2)。 */
+  rowNumber: number;
   /** Appが当該行のFileをまだ保持しているか(再試行ボタンの表示可否、Codexレビュー指摘I8)。 */
   canRetry: boolean;
   onPatch(id: string, patch: RowPatch): void;
@@ -46,7 +49,7 @@ type Props = {
   onRetry(id: string): void;
 };
 
-export function ReceiptRow({ row, canRetry, onPatch, onRemove, onRetry }: Props) {
+export function ReceiptRow({ row, rowNumber, canRetry, onPatch, onRemove, onRetry }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +100,7 @@ export function ReceiptRow({ row, canRetry, onPatch, onRemove, onRetry }: Props)
   };
 
   const commitEdit = (restoreFocus: boolean) => {
-    const parsed = parseYen(draft);
+    const parsed = parseYenInput(draft);
     if (parsed === "invalid") {
       setError("金額は数字で入力してください(例: 1200 / -300)");
       // 編集を閉じず、入力へフォーカスを残す(Codexレビュー指摘I3・I5)
@@ -151,20 +154,10 @@ export function ReceiptRow({ row, canRetry, onPatch, onRemove, onRetry }: Props)
     }
   };
 
-  // parseYenが許可する書式は「¥(任意)→-(任意)→数字」の順(¥が-より前)。単純に
-  // 文字列の先頭へ"-"を足し引きすると、ユーザーが"¥1,234"のように¥を手入力していた
-  // 場合に"-¥1,234"という不正な並びを作ってしまう(Codexレビュー再指摘Minor)。
-  // 先頭の¥プレフィックスを検出し、その直後に符号を置くようにする。
-  const toggleSign = () => {
-    setDraft((v) => {
-      const prefixMatch = /^[¥￥]\s*/.exec(v);
-      const prefix = prefixMatch ? prefixMatch[0] : "";
-      const rest = v.slice(prefix.length);
-      const toggled = rest.startsWith("-") ? rest.slice(1) : `-${rest}`;
-      return `${prefix}${toggled}`;
-    });
-  };
-  const isNegativeDraft = /^[¥￥]?\s*-/.test(draft);
+  // 符号切替・負数判定はManualEntryFormと共通の実装(src/moneyInput.ts)を使う
+  // (Codexレビュー最終ゲート指摘Minor#1: コンポーネント間の重複解消)。
+  const toggleSign = () => setDraft((v) => toggleYenSign(v));
+  const isNegativeDraft = isNegativeYenInput(draft);
 
   const displayAmount = row.amountYen === null ? "金額を入力" : `${row.amountYen.toLocaleString("ja-JP")}円`;
 
@@ -259,30 +252,42 @@ export function ReceiptRow({ row, canRetry, onPatch, onRemove, onRetry }: Props)
             ))}
           </div>
         )}
-        {row.status === "failed" && !row.processing && canRetry && (
-          <button
-            type="button"
-            className="retry-button"
-            aria-label={`${row.label}を再試行`}
-            onClick={() => onRetry(row.id)}
-          >
-            再試行
-          </button>
+        {row.status === "failed" && !row.processing && (
+          <>
+            {/* 原因別の案内文(Codexレビュー最終ゲート指摘I1)。role="alert"で即座に
+                読み上げられる。failureKind未設定(旧データ・モデル初期化失敗経由)の
+                場合は表示しない。 */}
+            {row.failureKind && (
+              <p role="alert" className="failure-message">
+                {FAILURE_MESSAGE[row.failureKind]}
+              </p>
+            )}
+            {canRetry && canRetryFailureKind(row.failureKind) && (
+              <button
+                type="button"
+                className="retry-button"
+                aria-label={`${row.label}を再試行`}
+                onClick={() => onRetry(row.id)}
+              >
+                再試行
+              </button>
+            )}
+          </>
         )}
       </div>
       <div className="row-actions">
         <button
           type="button"
-          aria-label={`${row.label}を${row.payer === "husband" ? "妻" : "夫"}の支払いへ変更`}
+          aria-label={`${row.label}（${rowNumber}行目）を${row.payer === "husband" ? "妻" : "夫"}の支払いへ変更`}
           onClick={() => onPatch(row.id, { payer: row.payer === "husband" ? "wife" : "husband" })}
         >
           {row.payer === "husband" ? "→妻へ" : "→夫へ"}
         </button>
-        <button type="button" aria-label={`${row.label}を削除`} onClick={() => onRemove(row.id)}>
+        <button type="button" aria-label={`${row.label}（${rowNumber}行目）を削除`} onClick={() => onRemove(row.id)}>
           削除
         </button>
       </div>
-      {zoomed && row.thumbnailUrl && (
+      {zoomed && (row.previewUrl ?? row.thumbnailUrl) && (
         <div
           className="thumb-overlay"
           role="dialog"
@@ -298,7 +303,11 @@ export function ReceiptRow({ row, canRetry, onPatch, onRemove, onRetry }: Props)
             else if (e.key === "Tab") e.preventDefault();
           }}
         >
-          <img src={row.thumbnailUrl} alt="" className="thumb-overlay-img" />
+          {/* 拡大時は320pxサムネイルではなく1280px相当のpreviewUrlを優先表示する
+              (Codexレビュー最終ゲート指摘I2)。<img>は拡大(zoomed)時のみ描画され、
+              閉じている間はデコード済み画像を保持しない。previewUrl生成が
+              best-effortで失敗している場合はthumbnailUrlへフォールバックする。 */}
+          <img src={row.previewUrl ?? row.thumbnailUrl} alt="" className="thumb-overlay-img" />
           <button
             type="button"
             ref={zoomCloseButtonRef}

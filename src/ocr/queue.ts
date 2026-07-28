@@ -1,7 +1,27 @@
 import type { OcrEngine } from "./engine";
 import type { RowPatch } from "../state/reducer";
-import { loadAsCanvas, enhanceContrast, toThumbnailBlob } from "../image/preprocess";
+import type { FailureKind } from "../types";
+import {
+  loadAsCanvas,
+  enhanceContrast,
+  toThumbnailBlob,
+  toPreviewBlob,
+  UnsupportedFormatError,
+  ImageTooLargeError,
+} from "../image/preprocess";
 import { extractTotal } from "../extract/extractTotal";
+
+/**
+ * `loadAsCanvas`が投げた例外を`Row.failureKind`へ分類する(Codexレビュー最終ゲート
+ * 指摘I1)。`UnsupportedFormatError`/`ImageTooLargeError`はinstanceofで判別できるが、
+ * それ以外(実装の`ImageDecodeError`、テストスタブが投げる汎用`Error`等)は
+ * すべて「デコード失敗」として扱う。
+ */
+function classifyLoadError(err: unknown): FailureKind {
+  if (err instanceof UnsupportedFormatError) return "unsupported-format";
+  if (err instanceof ImageTooLargeError) return "image-too-large";
+  return "image-decode";
+}
 
 /**
  * キューの進捗・エラーを構造化した形で通知する(Codexレビュー指摘I8)。
@@ -23,13 +43,16 @@ export type QueueCallbacks = {
   // 処理済み(縮小済み)canvasから生成した320px級サムネイルBlobを行へ返す(Codexレビュー指摘I1)。
   // 呼び出し側はObject URL化し、置換時・行削除時・削除済み行への遅着時に確実にrevokeすること。
   onThumbnail(id: string, blob: Blob): void;
+  // 拡大表示用の1280px級プレビューBlobを行へ返す(Codexレビュー最終ゲート指摘I2)。
+  // onThumbnailと同様、呼び出し側はObject URL化しライフサイクル全体でrevokeを管理する。
+  onPreview(id: string, blob: Blob): void;
   onResult(id: string, patch: RowPatch): void; // 行更新(amountYen/status/candidates/processing)
 };
 
 type Item = { id: string; file: File };
 
 /**
- * `loadAsCanvas`/`enhanceContrast`/`toThumbnailBlob`の差し替えポイント。
+ * `loadAsCanvas`/`enhanceContrast`/`toThumbnailBlob`/`toPreviewBlob`の差し替えポイント。
  * 実運用では`src/image/preprocess.ts`の実装を使うが、jsdom環境の単体テストでは
  * 実Canvas描画(`drawImage`/`getImageData`/`toBlob`等)に依存できないため、薄いスタブに
  * 差し替えられるようにしている。
@@ -38,9 +61,10 @@ export type OcrQueueDeps = {
   loadAsCanvas: (file: File) => Promise<HTMLCanvasElement>;
   enhanceContrast: (src: HTMLCanvasElement) => HTMLCanvasElement;
   toThumbnailBlob: (src: HTMLCanvasElement) => Promise<Blob>;
+  toPreviewBlob: (src: HTMLCanvasElement) => Promise<Blob>;
 };
 
-const defaultDeps: OcrQueueDeps = { loadAsCanvas, enhanceContrast, toThumbnailBlob };
+const defaultDeps: OcrQueueDeps = { loadAsCanvas, enhanceContrast, toThumbnailBlob, toPreviewBlob };
 
 /** 処理済みcanvasの明示解放。描画バッファをGC任せにせず即座に縮小する。 */
 function releaseCanvas(canvas: HTMLCanvasElement): void {
@@ -52,9 +76,14 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
  * キャンセル/初期化失敗/例外時の一律失敗patch。
  * `candidates`は空配列だが、複数行が同一配列インスタンスを共有して将来の
  * 意図しないミューテーションで汚染し合わないよう、呼び出しごとに新規生成する。
+ *
+ * `failureKind`は原因が分類できる場合のみ渡す(Codexレビュー最終ゲート指摘I1)。
+ * 省略時(キャンセルやモデル初期化失敗経由)は`undefined`のままにし、UI側で
+ * 原因別メッセージを出さない(cancelAllは「失敗」ではなくユーザー操作による中断であり、
+ * モデル初期化失敗は既に専用のrole="alert"バナーで原因を説明済みのため)。
  */
-function failedPatch(): RowPatch {
-  return { amountYen: null, status: "failed", candidates: [], processing: false };
+function failedPatch(failureKind?: FailureKind): RowPatch {
+  return { amountYen: null, status: "failed", candidates: [], processing: false, failureKind };
 }
 
 /**
@@ -151,6 +180,16 @@ export function createOcrQueue(
     }
   }
 
+  /** 同上。プレビュー生成自体の失敗もbest-effortとして扱う(Codexレビュー最終ゲート指摘I2)。 */
+  function emitPreview(id: string, blob: Blob): void {
+    if (disposed) return;
+    try {
+      cb.onPreview(id, blob);
+    } catch (err) {
+      console.error("OCR preview callback failed:", id, err);
+    }
+  }
+
   /** 裸の`void run()`を一箇所に集約し、予期しないrejectを未処理のまま放置しない。 */
   function kick(): void {
     void run().catch((err) => {
@@ -159,22 +198,39 @@ export function createOcrQueue(
   }
 
   async function processItem(item: Item): Promise<void> {
-    let canvas: HTMLCanvasElement | undefined;
+    // 画像ロード(decode)とOCR推論の失敗を別のtry/catchに分離する(Codexレビュー最終ゲート
+    // 指摘I1)。従来は単一のtry/catchで両方を囲んでおり、未対応形式・破損画像・巨大画像・
+    // OCR推論失敗のすべてが同じ`failedPatch()`(failureKindなし)に潰れ、UIも「読取失敗」の
+    // 一律表示になっていた。原因ごとに再試行が有効かどうかが異なるため区別する。
+    let canvas: HTMLCanvasElement;
+    try {
+      canvas = await deps.loadAsCanvas(item.file);
+    } catch (err) {
+      console.error("Image load failed:", item.file.name, err);
+      emitResult(item.id, failedPatch(classifyLoadError(err)));
+      return;
+    }
+
+    // 処理済み(縮小済み)canvasから表示用サムネイル・プレビューを生成して即座に返す
+    // (Codexレビュー指摘I1・最終ゲート指摘I2)。元画像のObject URLをApp側で保持し続けると
+    // メモリを圧迫するため、ここで作る縮小Blobを表示専用に使う。生成失敗はどちらも
+    // OCR結果に影響させないbest-effort。
+    try {
+      const thumbnail = await deps.toThumbnailBlob(canvas);
+      emitThumbnail(item.id, thumbnail);
+    } catch (thumbErr) {
+      console.error("Thumbnail generation failed:", item.file.name, thumbErr);
+    }
+    try {
+      const preview = await deps.toPreviewBlob(canvas);
+      emitPreview(item.id, preview);
+    } catch (previewErr) {
+      console.error("Preview generation failed:", item.file.name, previewErr);
+    }
+
     let enhanced: HTMLCanvasElement | undefined;
     let patch: RowPatch;
     try {
-      canvas = await deps.loadAsCanvas(item.file);
-
-      // 処理済み(縮小済み)canvasから表示用サムネイルを生成して即座に返す(Codexレビュー指摘I1)。
-      // 元画像のObject URLをApp側で保持し続けるとメモリを圧迫するため、ここで作る縮小Blobを
-      // 表示専用のサムネイルとして使う。生成失敗はOCR結果に影響させないbest-effort。
-      try {
-        const thumbnail = await deps.toThumbnailBlob(canvas);
-        emitThumbnail(item.id, thumbnail);
-      } catch (thumbErr) {
-        console.error("Thumbnail generation failed:", item.file.name, thumbErr);
-      }
-
       const firstResult = extractTotal(await engine.recognize(canvas));
 
       let result = firstResult;
@@ -204,11 +260,11 @@ export function createOcrQueue(
       };
     } catch (err) {
       console.error("OCR failed:", item.file.name, err);
-      patch = failedPatch();
+      patch = failedPatch("ocr");
     } finally {
       // onResult(呼び出し側コールバック)の例外をOCR失敗と誤認しないよう、
       // canvas解放後・try/catch外でonResultを呼ぶ(Codexレビュー指摘)。
-      if (canvas) releaseCanvas(canvas);
+      releaseCanvas(canvas);
       if (enhanced) releaseCanvas(enhanced);
     }
     emitResult(item.id, patch);
