@@ -662,4 +662,170 @@ describe("App", () => {
     const labels = [...container.querySelectorAll(".row-label")].map((el) => el.textContent);
     expect(labels).toEqual(["レシート 3", "レシート 4"]);
   });
+
+  it("手動追加フォームから行を追加すると一覧・集計に反映される(Task 10)", () => {
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("支出の名前"), { target: { value: "家賃" } });
+    fireEvent.change(screen.getByLabelText("追加する金額(円)"), { target: { value: "80000" } });
+    fireEvent.change(screen.getByLabelText("支払った人"), { target: { value: "wife" } });
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+
+    expect(screen.getByText("家賃")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "家賃の金額を編集" }).textContent).toBe("80,000円");
+    expect(screen.getByText("手入力")).toBeTruthy();
+
+    const summary = screen.getByLabelText("集計");
+    expect(summary.textContent).toContain("80,000円");
+  });
+
+  it("手動追加: 名前が空欄だとrole=alertでエラー表示され、一覧に行は追加されない", () => {
+    const { container } = render(<App />);
+
+    fireEvent.change(screen.getByLabelText("追加する金額(円)"), { target: { value: "1000" } });
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("名前を入力してください");
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
+  });
+
+  it("手動追加: 不正な金額(除去してから解釈しない、ReceiptRowと同じparseYen方式)はエラー表示され追加されない", () => {
+    const { container } = render(<App />);
+
+    fireEvent.change(screen.getByLabelText("支出の名前"), { target: { value: "駐車場代" } });
+    fireEvent.change(screen.getByLabelText("追加する金額(円)"), { target: { value: "12abc34" } });
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("金額は数字で入力してください");
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
+  });
+
+  it("手動追加: 返品・取消として入力ボタン(符号切替)で負数を追加できる", () => {
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("支出の名前"), { target: { value: "返金" } });
+    fireEvent.change(screen.getByLabelText("追加する金額(円)"), { target: { value: "1280" } });
+    fireEvent.click(screen.getByRole("button", { name: "追加する金額を返品・取消として入力" }));
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+
+    expect(screen.getByRole("button", { name: "返金の金額を編集" }).textContent).toBe("-1,280円");
+  });
+
+  it("新しい月を始める: 確認ダイアログでキャンセルすると何も変わらない", () => {
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("新しい月を始める: 確認して開始すると全行クリア・サムネイルURL解放・保存データ消去・重複検出/再試行用Fileのリセットまで行われる(Task 9レポート予告の統合ポイント)", () => {
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      const { container } = render(<App />);
+      const fileInputs = container.querySelectorAll('input[type="file"]');
+      const file = new File(["a"], "dup.png", { type: "image/png" });
+      selectFile(fileInputs[0] as HTMLInputElement, file);
+      const [id] = enqueueMock.mock.calls[0] as [string, File];
+      act(() => {
+        capturedCb!.onThumbnail(id, new Blob(["thumb"]));
+        capturedCb!.onResult(id, { amountYen: 1000, status: "auto-high", candidates: [], processing: false });
+      });
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+
+      revokeSpy.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
+
+      // 確認ダイアログには現在の集計(夫合計)が含まれる
+      expect(confirmSpy.mock.calls[0][0]).toContain("夫 1,000円");
+
+      // 全行クリアされる
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
+      // 表示中だったサムネイルのObject URLが解放される
+      expect(revokeSpy).toHaveBeenCalledTimes(1);
+
+      // localStorageには旧行データを含まない、新しい(空の)月の状態が保存される
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) as string);
+      expect(stored.rows).toEqual([]);
+
+      // 重複検出用Set(seenFiles)がクリアされているため、同じファイルを再度追加しても
+      // 「追加済みのようです」の確認ダイアログは出ない
+      confirmSpy.mockClear();
+      selectFile(fileInputs[0] as HTMLInputElement, file);
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+      expect(confirmSpy).not.toHaveBeenCalled();
+    } finally {
+      revokeSpy.mockRestore();
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("新しい月を始める: 処理中の行があってもpending中のOCRジョブをキャンセルし、リセット後に遅れて届く結果・サムネイルは無視される(Codexレビュー指摘: cancelAll()漏れ)", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      const { container } = render(<App />);
+      const fileInputs = container.querySelectorAll('input[type="file"]');
+      selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "processing.png"));
+      const [id] = enqueueMock.mock.calls[0] as [string, File];
+      expect(within(container.querySelector(".receipt-row") as HTMLElement).getByText("処理中…")).toBeTruthy();
+
+      cancelAllMock.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
+
+      // pending中のOCRジョブがキャンセルされる(呼ばないと旧月の画像がバックグラウンドで
+      // OCR処理され続け、新しい月の画像処理がその後ろに並んでしまう)
+      expect(cancelAllMock).toHaveBeenCalledTimes(1);
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
+
+      // 旧jobIdに対する遅延結果・サムネイルが届いてもクラッシュせず、行も復活しない
+      expect(() => {
+        act(() => {
+          capturedCb!.onThumbnail(id, new Blob(["late"]));
+          capturedCb!.onResult(id, { amountYen: 9999, status: "auto-high", candidates: [], processing: false });
+        });
+      }).not.toThrow();
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("新しい月を始める: 保存データの削除(clearState)が失敗した場合は中断し、行も保存データもpendingキャンセルも変更せずアラート表示する(Codexレビュー指摘: 中途半端な状態の防止)", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    const removeItemSpy = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+    try {
+      const { container } = render(<App />);
+      const fileInputs = container.querySelectorAll('input[type="file"]');
+      selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+      const [id] = enqueueMock.mock.calls[0] as [string, File];
+      act(() => {
+        capturedCb!.onResult(id, { amountYen: 1000, status: "auto-high", candidates: [], processing: false });
+      });
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+
+      cancelAllMock.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
+
+      expect(alertSpy).toHaveBeenCalledWith("保存データを削除できませんでした。時間をおいて再試行してください。");
+      // 中断されるため、行は残り、pendingキャンセルも呼ばれない(中途半端な後始末をしない)
+      expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+      expect(cancelAllMock).not.toHaveBeenCalled();
+    } finally {
+      removeItemSpy.mockRestore();
+      alertSpy.mockRestore();
+      confirmSpy.mockRestore();
+    }
+  });
 });

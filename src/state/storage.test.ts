@@ -45,10 +45,19 @@ describe("storage", () => {
     expect(loadState()).toBeNull();
   });
 
-  test("clearStateで消える", () => {
+  test("clearStateで消える(trueを返す)", () => {
     saveState(valid);
-    clearState();
+    expect(clearState()).toBe(true);
     expect(loadState()).toBeNull();
+  });
+
+  test("clearState: localStorage.removeItemが例外を投げてもクラッシュせずfalseを返す(Codexレビュー指摘: 呼び出し側が削除失敗を検知できる必要がある)", () => {
+    saveState(valid);
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+
+    expect(clearState()).toBe(false);
   });
 
   test("小数のamountYenは保存しない(false)", () => {

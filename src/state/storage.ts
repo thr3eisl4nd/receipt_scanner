@@ -82,8 +82,15 @@ export function loadState(): PersistedState | null {
   }
 }
 
-export function clearState(): void {
-  localStorage.removeItem(STORAGE_KEY);
+/** 削除。端末のプライベートブラウジング等でlocalStorageアクセス自体が例外を投げる場合はfalseを返す
+ *  (Codexレビュー指摘: saveState/loadStateと同様に呼び出し側で失敗を検知できる必要がある)。 */
+export function clearState(): boolean {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function currentMonth(): string {

@@ -10,7 +10,10 @@
 
 * { box-sizing: border-box; }
 body { font-family: -apple-system, "Hiragino Sans", sans-serif; margin: 0; color: #111827; background: #fff; }
-main { padding: 12px; padding-bottom: calc(140px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
+/* 画面下部固定の集計パネル(.summary-panel)は夫婦合計・差額・未確認警告・操作ボタン2つを
+   持つため、footerが最小限だった頃の140pxでは背面コンテンツ(手動追加フォーム等)の一部が
+   隠れる恐れがある。実際の集計パネル高さより余裕を持たせる(Task 10)。 */
+main { padding: 12px; padding-bottom: calc(200px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
 .add-buttons { display: flex; gap: 8px; }
 .payer-group { flex: 1; border: 1px solid #ccc; border-radius: 8px; padding: 8px; }
 .payer-group button { display: block; width: 100%; margin-top: 6px; padding: 10px; font-size: 15px; min-height: 44px; }
@@ -69,5 +72,19 @@ main { padding: 12px; padding-bottom: calc(140px + env(safe-area-inset-bottom));
 .cancel-all { min-height: 44px; padding: 8px 14px; margin: 4px 0; }
 .ocr-model-error button { min-height: 44px; padding: 8px 14px; }
 
+.manual-entry { border: 1px solid #ccc; border-radius: 8px; padding: 10px 12px; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.manual-entry h2 { font-size: 14px; font-weight: 700; margin: 0; }
+.manual-entry input, .manual-entry select { font-size: 16px; min-height: 44px; padding: 4px 8px; border: 1px solid #999; border-radius: 4px; }
+.manual-entry-amount { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.manual-entry-amount input { width: 8em; flex: none; }
+.manual-entry-amount .sign-toggle { min-height: 44px; min-width: 44px; padding: 4px 10px; }
+.manual-entry > button[type="submit"] { min-height: 44px; padding: 8px 14px; align-self: flex-start; }
+.manual-entry-error { color: #b00020; margin: 0; font-size: 13px; }
+
 .summary-panel { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 2px solid #333;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
+.summary-totals { font-size: 16px; }
+.summary-panel .delta { margin-top: 2px; font-weight: 700; }
+.summary-panel .warn { color: #6b4a00; margin-top: 2px; }
+.summary-panel .panel-actions { display: flex; gap: 8px; margin-top: 8px; }
+.summary-panel .panel-actions button { min-height: 44px; padding: 6px 12px; flex: 1; }

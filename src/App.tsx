@@ -1,10 +1,12 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { AddReceiptButtons } from "./components/AddReceiptButtons";
 import { ReceiptRow } from "./components/ReceiptRow";
+import { ManualEntryForm } from "./components/ManualEntryForm";
+import { SummaryPanel } from "./components/SummaryPanel";
 import { createOcrQueue, type OcrQueue, type QueueStatusEvent } from "./ocr/queue";
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
-import { reducer, toPersisted, fromPersisted, type AppState, type RowPatch } from "./state/reducer";
-import { saveState, loadState, currentMonth } from "./state/storage";
+import { reducer, toPersisted, fromPersisted, computeTotals, type AppState, type RowPatch } from "./state/reducer";
+import { saveState, loadState, currentMonth, clearState } from "./state/storage";
 import type { Payer, Row } from "./types";
 
 const initialState = (): AppState => {
@@ -235,6 +237,38 @@ export default function App() {
     queueRef.current?.cancelAll();
   };
 
+  // 「新しい月を始める」(設計ドキュメント§4・§5.5)。確認ダイアログで現在の集計を
+  // 提示してから、表示中サムネイルのObject URLを全解放し、再試行用File(retryFilesRef)・
+  // 重複検出用Set(seenFiles)をクリアし、localStorageを消去してからclearMonthをdispatch
+  // する(Task 9レポートで予告済みの統合ポイント)。onRemove/アンマウント時クリーンアップと
+  // 同様のURL解放パターンを流用する。
+  //
+  // 実行順序はCodexレビュー指摘を反映して当初案から調整した:
+  // 1) `clearState()`を最初に行い、失敗(例外)時はそこで中断する。先にサムネイルURLや
+  //    retryFilesRef/seenFilesを消してしまうと、永続化の削除に失敗した場合に「画面上には
+  //    旧月のデータが残っているのに再試行・重複検出の手段だけ失われる」中途半端な状態に
+  //    なる(Codexレビュー指摘)。
+  // 2) `queueRef.current?.cancelAll()`でpending中のOCRジョブを破棄する。これを呼ばないと
+  //    月次リセット後も旧月の画像がバックグラウンドでOCR処理され続け、新しい月に追加した
+  //    画像の処理がその後ろに並んでしまう(Codexレビュー指摘。行自体は既に無くなるため
+  //    結果が反映されて実害が出ることはないが、無駄な処理・待ち時間を発生させる)。
+  const onNewMonth = () => {
+    const t = computeTotals(state.rows);
+    const ok = window.confirm(
+      `${state.month} のデータ(夫 ${t.husbandYen.toLocaleString("ja-JP")}円 / 妻 ${t.wifeYen.toLocaleString("ja-JP")}円)を消去して新しい月を始めますか?`,
+    );
+    if (!ok) return;
+    if (!clearState()) {
+      window.alert("保存データを削除できませんでした。時間をおいて再試行してください。");
+      return;
+    }
+    queueRef.current?.cancelAll();
+    for (const r of state.rows) if (r.thumbnailUrl) URL.revokeObjectURL(r.thumbnailUrl);
+    retryFilesRef.current.clear();
+    seenFiles.current.clear();
+    dispatch({ type: "clearMonth", month: currentMonth() });
+  };
+
   const hasPendingWork = state.rows.some((r) => r.processing);
 
   return (
@@ -274,7 +308,8 @@ export default function App() {
           />
         ))}
       </ul>
-      {/* SummaryPanel・ManualEntryForm・新しい月 はTask 10 */}
+      <ManualEntryForm onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
+      <SummaryPanel state={state} onNewMonth={onNewMonth} />
     </main>
   );
 }
