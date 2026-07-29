@@ -323,49 +323,64 @@ export default function App() {
 
   return (
     <main>
-      <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
-      <PeopleManager
-        people={state.people}
-        rows={state.rows}
-        onAdd={() => dispatch({ type: "addPerson" })}
-        onRename={(id, name) => dispatch({ type: "renamePerson", id, name })}
-        onRemove={(id) => dispatch({ type: "removePerson", id })}
-      />
-      <AddReceiptButtons people={state.people} onFiles={onFiles} />
+      {/* 「紙」本体(設計ドキュメント§15.2)。集計パネル(.summary-panel、画面下部固定)は
+          意図的にこの外側に置く: ジグザグのミシン目エッジ(clip-path)を紙側にだけ適用し、
+          固定パネルの位置決めに影響を与えないようにするため。 */}
+      <div className="receipt-paper">
+        {/* レシートの店名ヘッダー様式(設計ドキュメント§15.3): モノスペース・中央寄せ・
+            字間広め、上下に「＊ ＊ ＊」の装飾行(装飾のみ・aria-hidden)。 */}
+        <header className="receipt-header">
+          <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
+          <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
+          <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
+        </header>
+        <PeopleManager
+          people={state.people}
+          rows={state.rows}
+          onAdd={() => dispatch({ type: "addPerson" })}
+          onRename={(id, name) => dispatch({ type: "renamePerson", id, name })}
+          onRemove={(id) => dispatch({ type: "removePerson", id })}
+        />
+        <AddReceiptButtons people={state.people} onFiles={onFiles} />
 
-      {ocrEvent?.kind === "model-error" ? (
-        <div role="alert" className="error ocr-model-error">
-          <p>{ocrEvent.message}</p>
-          <button type="button" onClick={onRetryModelError}>再試行</button>
-        </div>
-      ) : (
-        <p role="status" aria-live="polite" aria-atomic="true" className="ocr-status">
-          {ocrStatusText}
-        </p>
-      )}
-      {hasPendingWork && (
-        <button type="button" className="cancel-all" onClick={onCancelAll}>すべてキャンセル</button>
-      )}
+        {/* 切り取り線装飾(設計ドキュメント§15.4、装飾のみ・aria-hidden)。 */}
+        <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
 
-      {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
-      <ul className="receipt-list">
-        {state.rows.map((row, index) => (
-          <ReceiptRow
-            key={row.id}
-            row={row}
-            people={state.people}
-            rowNumber={index + 1}
-            canRetry={retryFilesRef.current.has(row.id)}
-            onPatch={(id, patch) => {
-              releaseRetryFileIfResolved(id, patch);
-              dispatch({ type: "updateRow", id, patch });
-            }}
-            onRemove={onRemove}
-            onRetry={onRetry}
-          />
-        ))}
-      </ul>
-      <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
+        {ocrEvent?.kind === "model-error" ? (
+          <div role="alert" className="error ocr-model-error">
+            <p>{ocrEvent.message}</p>
+            <button type="button" onClick={onRetryModelError}>再試行</button>
+          </div>
+        ) : (
+          <p role="status" aria-live="polite" aria-atomic="true" className="ocr-status">
+            {ocrStatusText}
+          </p>
+        )}
+        {hasPendingWork && (
+          <button type="button" className="cancel-all" onClick={onCancelAll}>すべてキャンセル</button>
+        )}
+
+        {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
+        <ul className="receipt-list">
+          {state.rows.map((row, index) => (
+            <ReceiptRow
+              key={row.id}
+              row={row}
+              people={state.people}
+              rowNumber={index + 1}
+              canRetry={retryFilesRef.current.has(row.id)}
+              onPatch={(id, patch) => {
+                releaseRetryFileIfResolved(id, patch);
+                dispatch({ type: "updateRow", id, patch });
+              }}
+              onRemove={onRemove}
+              onRetry={onRetry}
+            />
+          ))}
+        </ul>
+        <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
+        <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
+      </div>
       <SummaryPanel state={state} onNewMonth={onNewMonth} />
     </main>
   );

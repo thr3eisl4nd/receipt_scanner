@@ -32,18 +32,20 @@ export function SummaryPanel({ state, onNewMonth }: Props) {
 
   return (
     <section className="summary-panel" aria-label="集計">
+      {/* レシートの合計欄の様式(設計ドキュメント§15.4): 上に二重線(border-top:double、
+          CSSのみ)、「合 計」の印字風ラベル(装飾のみ・aria-hidden)。 */}
+      <p className="summary-heading" aria-hidden="true">合 計</p>
       <div className="summary-totals">
-        {t.totals.map((total, i) => (
-          <span key={total.personId}>
-            {i > 0 && " / "}
-            {/* 人別テーマカラーのドットは装飾のみ(aria-hidden)。色だけに頼らず
-                名前テキストを併記する(既存a11y方針、設計ドキュメント§14.1・§14.4)。 */}
+        {t.totals.map((total) => (
+          <div key={total.personId} className="summary-line">
+            {/* 人別テーマカラーのドット+蛍光マーカー風ハイライトは装飾のみ(aria-hidden)。
+                色だけに頼らず名前テキストを併記する(既存a11y方針、設計ドキュメント§14.1・§15.4)。 */}
             <span className={`summary-person ${personColorClass(total.colorIndex)}`}>
               <span className="person-dot" aria-hidden="true" />
               {total.name}
             </span>
-            : <b>{yen(total.amountYen)}円</b>
-          </span>
+            <b className="summary-amount">{yen(total.amountYen)}円</b>
+          </div>
         ))}
       </div>
       {/* ちょうど2人のときのみ差額行を表示する(1人・3人以上では非表示、設計ドキュメント§14.3)。 */}

@@ -4,8 +4,13 @@ import type { RowPatch } from "../state/reducer";
 import { parseYenInput, toggleYenSign, isNegativeYenInput } from "../moneyInput";
 import { personColorClass } from "../personColor";
 
+/**
+ * auto-highのみ表示テキストを`[自動]`にする(設計ドキュメント§15.4: 「自動読取バッジ」は
+ * 印字風のモノスペーステキスト。他の状態文言はテスト(`getByText("確認済"/"読取失敗"/"手入力")`)
+ * に合わせてそのまま維持する)。
+ */
 const STATUS_LABEL: Record<Row["status"], string> = {
-  "auto-high": "自動読取",
+  "auto-high": "[自動]",
   "needs-review": "要確認",
   confirmed: "確認済",
   manual: "手入力",
@@ -171,8 +176,18 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
   const currentPerson = currentPersonIndex >= 0 ? people[currentPersonIndex] : undefined;
   const nextPerson = people.length > 1 ? people[(currentPersonIndex + 1) % people.length] : undefined;
 
+  // 行追加時の「印字」アニメーション(設計ドキュメント§15.5)は複数行同時追加時に
+  // 60msずつずらす(stagger)。CSS`animation`は要素マウント時に一度だけ走るため
+  // (keyはrow.idなので既存行が再マウントされることはない)、後から並び順が変わっても
+  // 既に再生済みのアニメーションが再生され直すことはない。極端に長いリストで遅延が
+  // 積み上がらないよう、最大10行分(600ms)でキャップする。
+  const printDelayMs = Math.min(rowNumber - 1, 9) * 60;
+
   return (
-    <li className={`receipt-row ${row.processing ? "is-processing" : `status-${row.status}`}`}>
+    <li
+      className={`receipt-row ${row.processing ? "is-processing" : `status-${row.status}`}`}
+      style={{ animationDelay: `${printDelayMs}ms` }}
+    >
       {row.thumbnailUrl && (
         <button
           type="button"
@@ -182,7 +197,7 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
           aria-expanded={zoomed}
           onClick={() => setZoomed((v) => !v)}
         >
-          <img src={row.thumbnailUrl} alt="" className="thumb" />
+          <img src={row.thumbnailUrl} alt="" className="thumb" width={48} height={48} />
         </button>
       )}
       <div className="row-main">
@@ -200,7 +215,11 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
             専用の`badge-processing`+軽量スピナーにする(row.statusがまだ"failed"の
             ままでもアンバー表示にならないようにする)。 */}
         <span className={`badge ${row.processing ? "badge-processing" : `badge-${row.status}`}`}>
-          {row.processing && <span className="spinner" aria-hidden="true" />}
+          {/* 点滅する印字カーソル「▮」(設計ドキュメント§15.5)。文字自体はCSSの
+              `::before`生成コンテンツで描画するため、この要素のtextContentは常に空のまま
+              (バッジのテキスト「処理中…」の完全一致テスト・aria-live領域の完全一致テストに
+              影響しない)。 */}
+          {row.processing && <span className="print-cursor" aria-hidden="true" />}
           {row.processing ? "処理中…" : STATUS_LABEL[row.status]}
         </span>
         {editing ? (

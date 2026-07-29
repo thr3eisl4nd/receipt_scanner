@@ -1,52 +1,38 @@
 /* ==========================================================================
-   デザイントークン(設計ドキュメント§14.4 UI/UX刷新)
-   クリーム系オフホワイト背景 + ソフトグリーンのアクセント。「家計簿アプリらしい
-   安心感」を狙い、角丸カード・柔らかい影・ピル型バッジで統一する。
+   v1.2 レシートモチーフ・デザインシステム(設計ドキュメント§15)
+   アプリ全体を「レジから印字された1枚の感熱紙レシート」に見立てる。
+   §14.4(クリーム+ソフトグリーンのカードUI)を全面置換するが、アクセシビリティ・
+   タップ領域・ライトテーマ固定・iOS対策等の品質要件(§15.6)はすべて維持する。
    ========================================================================== */
 :root {
   /* v1はダークモード対応をスコープ外とし、明示的にライトテーマへ固定する
-     (Codexレビュー指摘I7)。`color-scheme: light dark`のままだと、下記の各状態色は
-     背景のみ固定で前景色を指定していなかったため、端末がダークモードの場合に
-     白系の継承文字色が薄黄色・薄緑背景に載って読めなくなる恐れがあった。
-     §14.4刷新後もこの制約は変わらないため、ダークモード用の記述(prefers-color-scheme
-     やdata-theme切替)は一切追加しない。 */
+     (Codexレビュー指摘I7)。以後のリデザインでもこの制約は変えない。 */
   color-scheme: light;
 
-  --color-bg: #faf7f1;
-  --color-surface: #ffffff;
-  --color-surface-sunken: #f3efe5;
-  --color-border: #e7e1d2;
-  --color-ink: #2c2a22;
-  --color-ink-soft: #6b6656;
+  /* デザイントークン(設計ドキュメント§15.2そのまま)。 */
+  --paper: #fcfbf7; /* 感熱紙 */
+  --ink: #26241f; /* サーマル印字の黒 */
+  --ink-faded: #6b675e; /* 薄れた印字 */
+  --stamp: #c7402d; /* 朱肉・レジの赤(要確認/失敗/返品/削除系)。枠線・塗り潰しに使う */
+  /* 朱色文字をそのまま地の紙に置くとAA(4.5:1)を僅かに上回る程度(4.83:1)で余裕が
+     ないため、文字色専用にわずかに暗くした近似色を用意する(§15.6でAA検証必須、
+     仕様の色は起点であり微調整は裁量)。枠線・塗り潰し面には引き続き`--stamp`を使う。 */
+  --stamp-text: #ac3523; /* 紙の上のテキスト用(6.17:1) */
+  --counter: #33413a; /* 背景=レジ台の深いフェルトグリーン */
+  --rule-dashed: 1px dashed color-mix(in srgb, var(--ink) 35%, transparent); /* ミシン目 */
 
-  --color-accent: #5b8266;
-  --color-accent-dark: #3f6b4c;
-  --color-accent-tint: #e6efe7;
+  /* 数字・金額・月表示・進捗カウント用(設計ドキュメント§15.3)。追加フォントDLは
+     一切行わず、システムのモノスペース総称のみを使う。 */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
-  --color-amber: #b9862b;
-  --color-amber-dark: #6b4a00;
-  --color-amber-tint: #fcf1da;
+  --radius-print: 4px; /* 印刷物らしい控えめな角丸(カードの丸みは使わない) */
+  --radius-pill: 999px; /* 判子・スタンプ系バッジのみに使う */
+  --shadow-panel: 0 -6px 16px rgba(38, 36, 31, 0.28);
 
-  --color-neutral-border: #c9c2ae;
-  --color-neutral-tint: #efece2;
-  --color-neutral-dark: #4a4638;
-
-  --color-processing: #4a5f8a;
-  --color-processing-tint: #eaeffb;
-
-  --color-danger: #b00020;
-
-  --radius-card: 16px;
-  --radius-chip: 12px;
-  --radius-pill: 999px;
-  --shadow-card: 0 1px 2px rgba(44, 42, 34, 0.04), 0 6px 16px rgba(44, 42, 34, 0.06);
-  --shadow-panel: 0 -6px 20px rgba(44, 42, 34, 0.09);
-
-  /* 人別テーマカラー(設計ドキュメント§14.1・§14.4): グリーンと調和する落ち着いた
-     8色。`src/personColor.ts`の`personColorClass()`がPerson.colorIndexをこの
-     `--person-color-0`〜`--person-color-7`のいずれかへ丸め込む。色だけに頼らず
-     人の名前テキストを必ず併記する(既存a11y方針)ため、ここでの色付けはあくまで
-     補助的な装飾(ドット・アクセント枠線)にとどめ、文字色そのものは変えない。 */
+  /* 人別テーマカラー(設計ドキュメント§14.1・§15.4)。ドット・枠線用の落ち着いた8色は
+     維持しつつ、人名の背景に敷く「蛍光マーカー風ハイライト」用の生RGBを追加する。
+     マーカー色はいずれもアルファ0.55で紙(#FCFBF7)に重ねた上に`--ink`の文字を置いた
+     状態で最低7.97:1(実測)のコントラストがあり、WCAG AAの4.5:1を大きく上回る。 */
   --person-color-0: #5b8266; /* グリーン */
   --person-color-1: #c1694f; /* テラコッタ */
   --person-color-2: #5b7c99; /* ブルーグレー */
@@ -56,84 +42,149 @@
   --person-color-6: #b56576; /* ダスティローズ */
   --person-color-7: #7a705c; /* スレート */
 
-  color: var(--color-ink);
-  background: var(--color-bg);
+  --marker-0-rgb: 143, 232, 74; /* 蛍光ライム */
+  --marker-1-rgb: 255, 138, 76; /* 蛍光オレンジ */
+  --marker-2-rgb: 92, 194, 255; /* 蛍光スカイ */
+  --marker-3-rgb: 255, 226, 74; /* 蛍光イエロー */
+  --marker-4-rgb: 227, 107, 255; /* 蛍光マゼンタ */
+  --marker-5-rgb: 62, 230, 199; /* 蛍光アクア */
+  --marker-6-rgb: 255, 111, 165; /* 蛍光ピンク */
+  --marker-7-rgb: 140, 155, 255; /* 蛍光ペリウィンクル */
+
+  /* 紙のごく薄いテクスチャ(外部リソース禁止のためインラインSVG data URI、約470バイト)。
+     feTurbulenceのノイズをアルファ0.05相当に抑えたfeColorMatrixで極薄く着色するのみで、
+     本文コントラストへの影響は無視できる(背景の明度をほぼ変えない)。 */
+  --paper-texture: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%22.85%22%20numOctaves%3D%222%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20values%3D%220%200%200%200%20.15%200%200%200%200%20.14%200%200%200%200%20.12%200%200%200%20.05%200%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22100%25%22%20height%3D%22100%25%22%20filter%3D%22url(%23n)%22%2F%3E%3C%2Fsvg%3E");
+
+  color: var(--ink);
+  background: var(--counter);
 }
 
 * { box-sizing: border-box; }
 
+/* ページ背景はレジ台(深緑)固定。ジグザグエッジ・回転したバッジ・テクスチャで
+   横スクロールが発生しないよう明示的に抑止する(実装指示: overflow管理)。 */
+html, body {
+  background: var(--counter);
+  overflow-x: hidden;
+}
+
 body {
   font-family: -apple-system, "Hiragino Sans", sans-serif;
   margin: 0;
-  color: var(--color-ink);
-  background: var(--color-bg);
+  color: var(--ink);
 }
 
-/* 金額は桁を揃えて太めに表示する(設計ドキュメント§14.4)。システムフォントの
-   まま、`font-variant-numeric: tabular-nums`のみを金額表示箇所へ適用する。 */
+/* タップ操作の質(web-design-guidelines監査、§15.7): ダブルタップズームの遅延を
+   避け、既定のグレーのタップハイライトが「印刷物」の質感と衝突しないようにする。 */
+button, a, input, select, [role="button"] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 数字・金額・月表示・進捗カウントはモノスペース+桁揃え+太字(設計ドキュメント§15.3)。 */
 .amount,
-.summary-totals b,
+.month,
+.summary-amount,
 .delta,
 .candidates button,
 .amount-editor input,
 .manual-entry-amount input {
   font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
 }
 
-/* サムネイルはbutton包みにしてキーボード操作・aria-expandedを持たせる(Codexレビュー指摘I6)。
-   拡大表示は行のflexレイアウトを壊さないよう、行外オーバーレイ(.thumb-overlay)で行う。 */
+/* ---------------------------------------------------------------------
+   全体レイアウト: レジ台(counter)の上に浮かぶ「紙」(paper)。
+   --------------------------------------------------------------------- */
 main {
-  padding: 12px;
-  /* 画面下部固定の集計パネル(.summary-panel)は人別合計・差額・未確認警告・操作ボタン2つを
-     持つため、footerが最小限だった頃の140pxでは背面コンテンツ(手動追加フォーム等)の一部が
-     隠れる恐れがある。実際の集計パネル高さより余裕を持たせる(Task 10、§14.4刷新でパネルの
-     角丸・パディングが増えた分もここで吸収する)。 */
-  padding-bottom: calc(220px + env(safe-area-inset-bottom));
   max-width: 640px;
   margin: 0 auto;
 }
 
-/* ヘッダー(設計ドキュメント§14.4: 統一されたカードデザイン)。h1自体を
-   カード化することで、追加のラッパー要素なしに見た目だけを刷新する。 */
-main > h1 {
+/* 「紙」本体。上下端はジグザグのミシン目エッジ(CSS clip-pathの三角連続、画像不使用、
+   設計ドキュメント§15.2)。パーセンテージのx座標で幅に追従するため、どの画面幅でも
+   横スクロールを起こさない。上下に十分な内側パディングを確保し、ジグザグの凹み(8px)が
+   実コンテンツを削らないようにしている。 */
+.receipt-paper {
+  position: relative;
+  background-color: var(--paper);
+  background-image: var(--paper-texture);
+  clip-path: polygon(
+    0% 8px, 4.167% 0px, 8.333% 8px, 12.5% 0px, 16.667% 8px, 20.833% 0px, 25% 8px, 29.167% 0px,
+    33.333% 8px, 37.5% 0px, 41.667% 8px, 45.833% 0px, 50% 8px, 54.167% 0px, 58.333% 8px, 62.5% 0px,
+    66.667% 8px, 70.833% 0px, 75% 8px, 79.167% 0px, 83.333% 8px, 87.5% 0px, 91.667% 8px, 95.833% 0px,
+    100% 8px,
+    100% calc(100% - 8px), 95.833% 100%, 91.667% calc(100% - 8px), 87.5% 100%, 83.333% calc(100% - 8px),
+    79.167% 100%, 75% calc(100% - 8px), 70.833% 100%, 66.667% calc(100% - 8px), 62.5% 100%,
+    58.333% calc(100% - 8px), 54.167% 100%, 50% calc(100% - 8px), 45.833% 100%, 41.667% calc(100% - 8px),
+    37.5% 100%, 33.333% calc(100% - 8px), 29.167% 100%, 25% calc(100% - 8px), 20.833% 100%,
+    16.667% calc(100% - 8px), 12.5% 100%, 8.333% calc(100% - 8px), 4.167% 100%,
+    0% calc(100% - 8px)
+  );
+  padding: 22px 16px calc(230px + env(safe-area-inset-bottom));
+}
+
+/* レシートの店名ヘッダー様式(設計ドキュメント§15.3): モノスペース・中央寄せ・
+   字間広め、上下に「＊ ＊ ＊」の装飾行(装飾のみ・aria-hidden)。 */
+.receipt-header {
+  text-align: center;
+  margin: 0 0 16px;
+}
+.receipt-header .receipt-deco {
+  margin: 0 0 4px;
+  color: var(--ink-faded);
+  letter-spacing: 0.5em;
+  font-size: 13px;
+  user-select: none;
+}
+.receipt-header h1 {
+  margin: 4px 0;
   display: flex;
-  align-items: baseline;
   flex-wrap: wrap;
+  justify-content: center;
+  align-items: baseline;
   gap: 8px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  margin: 0 0 14px;
-  padding: 16px 18px;
-  font-size: 19px;
-  line-height: 1.4;
+  font-family: var(--font-mono);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-size: 18px;
+  line-height: 1.5;
 }
 .month {
   font-size: 13px;
-  font-weight: 600;
-  color: var(--color-accent-dark);
-  background: var(--color-accent-tint);
-  border-radius: var(--radius-pill);
-  padding: 3px 10px;
+  font-weight: 700;
+  color: var(--ink);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-print);
+  padding: 2px 8px;
+  letter-spacing: 0.04em;
+}
+
+/* 切り取り線装飾(設計ドキュメント§15.4: 「✂ ─ ─ ─ ─」風、装飾のみ・aria-hidden)。
+   セクション間の区切りに使う。行区切り(ミシン目)は`.receipt-row`側で別途扱う。 */
+.tear-line {
+  text-align: center;
+  color: var(--ink-faded);
+  letter-spacing: 0.2em;
+  font-size: 13px;
+  margin: 18px 0;
+  user-select: none;
 }
 
 /* ---------------------------------------------------------------------
-   人の管理(設計ドキュメント§14.1・§14.4)。人はチップ/カードで横並び表示し、
-   「+ 人を追加」ボタンはフレンドリーな見た目にする。
+   人の管理(設計ドキュメント§14.1・§15.4)。判子ではなく「紙に留めた付箋/タグ」風の
+   控えめな破線タグにし、名前部分には蛍光マーカー風ハイライトを敷く。
    --------------------------------------------------------------------- */
 .people-manager {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 12px;
+  padding-bottom: 14px;
   margin-bottom: 14px;
+  border-bottom: var(--rule-dashed);
 }
 .people-list {
   list-style: none;
   padding: 0;
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
@@ -144,333 +195,363 @@ main > h1 {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  background: var(--color-surface-sunken);
-  border: 1px solid var(--color-border);
-  /* 人別テーマカラーの左側アクセント枠線(色+名前テキストの両方で識別、§14.1)。 */
-  border-left: 4px solid var(--person-accent, var(--color-accent));
-  border-radius: var(--radius-chip);
+  border: 1px dashed color-mix(in srgb, var(--ink) 45%, transparent);
+  border-radius: var(--radius-print);
   padding: 4px 8px 4px 10px;
 }
-.person-item.person-color-0 { --person-accent: var(--person-color-0); }
-.person-item.person-color-1 { --person-accent: var(--person-color-1); }
-.person-item.person-color-2 { --person-accent: var(--person-color-2); }
-.person-item.person-color-3 { --person-accent: var(--person-color-3); }
-.person-item.person-color-4 { --person-accent: var(--person-color-4); }
-.person-item.person-color-5 { --person-accent: var(--person-color-5); }
-.person-item.person-color-6 { --person-accent: var(--person-color-6); }
-.person-item.person-color-7 { --person-accent: var(--person-color-7); }
+.person-item.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
+.person-item.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
+.person-item.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
+.person-item.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
+.person-item.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
+.person-item.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
+.person-item.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
+.person-item.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
 
-/* 色の小さなドット(装飾のみ・aria-hidden)。色だけに頼らないよう、常に
-   人の名前テキストと併記される(既存a11y方針)。 */
+/* 色の小さなドット(装飾のみ・aria-hidden)。色だけに頼らず、常に人の名前テキストと
+   併記される(既存a11y方針)。 */
 .person-dot {
   display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--person-accent, var(--color-accent));
+  background: var(--person-accent, var(--ink));
   flex: none;
 }
 
+/* 人名の背景に半透明の蛍光マーカー塗り(設計ドキュメント§15.4)。文字色は常に
+   `--ink`(どのマーカー色に対しても実測7.97:1以上)にして、色相を問わずAAを確保する。 */
 .person-name {
   min-height: 44px;
   font-size: 15px;
-  background: none;
+  background: var(--person-marker, transparent);
   border: none;
-  border-radius: 8px;
+  border-radius: 2px 8px 4px 8px;
   padding: 4px 8px;
-  color: var(--color-ink);
-  font-weight: 600;
+  color: var(--ink);
+  font-weight: 700;
+  /* 人の名前は自由入力のため、非常に長い/区切りのない文字列でも自身の枠内で
+     折り返す(web-design-guidelines監査、§15.7: 長いコンテンツの処理)。 */
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 /* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大する
-   (.amount-editor inputと同じ理由)。新設した名前編集入力だけこの対策から
-   漏れていた(Codexレビュー指摘I4)ため、16pxを明示する。 */
+   (.amount-editor inputと同じ理由)。 */
 .person-name-editor input {
   min-height: 44px;
   font-size: 16px;
-  border: 1px solid var(--color-neutral-border);
-  border-radius: 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-print);
   padding: 4px 8px;
+  font-family: inherit;
 }
-.person-name-error { color: var(--color-danger); margin: 0; font-size: 13px; width: 100%; }
+.person-name-error { color: var(--stamp-text); margin: 0; font-size: 13px; width: 100%; }
 .person-item button[aria-label$="を削除"] {
   min-height: 44px; min-width: 44px; padding: 4px 10px;
-  border: 1px solid var(--color-border); border-radius: var(--radius-pill);
-  background: var(--color-surface); color: var(--color-ink-soft);
+  border: 1.5px solid var(--stamp); border-radius: var(--radius-print);
+  background: var(--paper); color: var(--ink);
 }
-.person-delete-reason { color: var(--color-amber-dark); font-size: 13px; }
+.person-item button[aria-label$="を削除"]:disabled { border-color: color-mix(in srgb, var(--ink) 35%, transparent); color: var(--ink-faded); }
+.person-delete-reason { color: var(--ink-faded); font-size: 13px; }
 
-/* 「+ 人を追加」はフレンドリーな破線ピルボタンにする(設計ドキュメント§14.1)。 */
+/* 「+ 人を追加」は印刷物らしい破線の枠線ボタンにする(設計ドキュメント§15.4)。 */
 .people-manager > button {
   min-height: 44px;
   padding: 8px 16px;
-  border: 1px dashed var(--color-accent);
-  border-radius: var(--radius-pill);
-  background: var(--color-accent-tint);
-  color: var(--color-accent-dark);
-  font-weight: 600;
+  border: 1.5px dashed var(--ink);
+  border-radius: var(--radius-print);
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
 }
 
 /* ---------------------------------------------------------------------
-   取り込みカード(設計ドキュメント§14.4)。
+   取り込みカード(設計ドキュメント§15.4: file入力ボタンはink 1.5px solid・角丸4px)。
    --------------------------------------------------------------------- */
 .add-buttons {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 12px;
-  margin-bottom: 14px;
+  padding-bottom: 14px;
+  margin-bottom: 0;
 }
 .payer-group {
   flex: 1;
   min-width: 150px;
-  background: var(--color-surface-sunken);
-  border: 1px solid var(--color-border);
-  border-left: 4px solid var(--person-accent, var(--color-accent));
-  border-radius: var(--radius-chip);
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  border-radius: var(--radius-print);
   padding: 10px;
 }
-.payer-group.person-color-0 { --person-accent: var(--person-color-0); }
-.payer-group.person-color-1 { --person-accent: var(--person-color-1); }
-.payer-group.person-color-2 { --person-accent: var(--person-color-2); }
-.payer-group.person-color-3 { --person-accent: var(--person-color-3); }
-.payer-group.person-color-4 { --person-accent: var(--person-color-4); }
-.payer-group.person-color-5 { --person-accent: var(--person-color-5); }
-.payer-group.person-color-6 { --person-accent: var(--person-color-6); }
-.payer-group.person-color-7 { --person-accent: var(--person-color-7); }
+.payer-group.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
+.payer-group.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
+.payer-group.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
+.payer-group.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
+.payer-group.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
+.payer-group.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
+.payer-group.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
+.payer-group.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
 .payer-group h2 {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 14px;
   font-weight: 700;
-  margin: 0 0 6px;
+  margin: 0 0 8px;
+  background: var(--person-marker, transparent);
+  color: var(--ink);
+  border-radius: 2px 8px 4px 8px;
+  padding: 2px 8px;
+  overflow-wrap: anywhere; max-width: 100%;
 }
 .payer-group button {
   display: block; width: 100%; margin-top: 6px; padding: 10px; font-size: 15px; min-height: 44px;
-  border: 1px solid var(--color-border); border-radius: var(--radius-chip);
-  background: var(--color-surface); color: var(--color-ink); font-weight: 600;
+  border: 1.5px solid var(--ink); border-radius: var(--radius-print);
+  background: var(--paper); color: var(--ink); font-weight: 600;
 }
-.payer-group button:hover { background: var(--color-accent-tint); border-color: var(--color-accent); }
+.payer-group button:hover { background: color-mix(in srgb, var(--ink) 6%, var(--paper)); }
 
 /* ---------------------------------------------------------------------
-   レシート一覧(設計ドキュメント§14.4: 一覧全体をカードとして統一する)。
+   レシート一覧(設計ドキュメント§15.4): 行区切りはミシン目(dashed)、
+   追加時は「印字」アニメーション(transform/opacityのみ、200ms、stagger 60ms)。
    --------------------------------------------------------------------- */
 .receipt-list {
   list-style: none;
-  padding: 4px 10px;
-  margin: 0 0 14px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-}
-/* レシートがまだ0件の間は、空のカード枠(境界線・影だけの帯)を表示しない。
-   `:empty`はDOM構造(=行数)に影響しない見た目だけの調整。 */
-.receipt-list:empty {
-  border: none;
-  box-shadow: none;
   padding: 0;
-  margin: 0;
+  margin: 0 0 4px;
 }
-.receipt-row { display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px solid var(--color-border); padding: 10px 2px; }
+.receipt-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  border-bottom: var(--rule-dashed);
+  padding: 12px 2px;
+  animation: receipt-print-in 200ms ease-out both;
+}
 .receipt-row:last-child { border-bottom: none; }
 
-.thumb-button {
-  flex: none; padding: 0; border: none; background: none; border-radius: 8px; overflow: hidden;
-  width: 48px; height: 48px; min-width: 44px; min-height: 44px;
+@keyframes receipt-print-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
 }
-.thumb { display: block; width: 48px; height: 48px; object-fit: cover; border-radius: 8px; }
+
+.thumb-button {
+  flex: none; padding: 0; border: none; background: none; border-radius: 2px; overflow: hidden;
+  width: 48px; height: 48px; min-width: 44px; min-height: 44px;
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+}
+.thumb { display: block; width: 48px; height: 48px; object-fit: cover; }
 .thumb-overlay {
-  position: fixed; inset: 0; z-index: 100; background: rgba(44, 42, 34, 0.92);
+  position: fixed; inset: 0; z-index: 100; background: rgba(38, 36, 31, 0.92);
   display: flex; align-items: center; justify-content: center; padding: 16px;
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
+  /* フルスクリーンのモーダル(web-design-guidelines監査、§15.7): 背景のスクロール
+     チェイニングを防ぐ。 */
+  overscroll-behavior: contain;
 }
-.thumb-overlay-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+.thumb-overlay-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 2px; }
 .thumb-overlay-close {
   position: absolute; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
-  min-height: 44px; min-width: 44px; padding: 8px 14px; border-radius: var(--radius-pill); border: none;
-  background: var(--color-surface); color: var(--color-ink); font-size: 15px; font-weight: 600;
+  min-height: 44px; min-width: 44px; padding: 8px 14px; border-radius: var(--radius-print); border: 1.5px solid var(--ink);
+  background: var(--paper); color: var(--ink); font-size: 15px; font-weight: 600;
 }
 
 .row-main { flex: 1; min-width: 0; }
-.row-label { font-weight: 600; }
+.row-label { font-weight: 700; }
 .amount {
-  font-size: 18px; font-weight: 700; background: var(--color-surface-sunken); border: 1px solid var(--color-border);
-  border-radius: var(--radius-chip); padding: 4px 10px; min-height: 44px; color: var(--color-ink);
+  font-size: 19px; font-weight: 800; background: none; border: none;
+  border-bottom: 1.5px dashed var(--ink); border-radius: 0; padding: 4px 4px; min-height: 44px; color: var(--ink);
 }
 .amount-editor { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
 /* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大するため明示指定する。 */
 .amount-editor input {
-  font-size: 16px; min-height: 44px; padding: 4px 8px; border: 1px solid var(--color-neutral-border); border-radius: 8px;
+  font-size: 16px; min-height: 44px; padding: 4px 8px; border: 1.5px solid var(--ink); border-radius: var(--radius-print);
   width: 8em;
 }
-.amount-editor button { min-height: 44px; min-width: 44px; padding: 4px 10px; border-radius: var(--radius-pill); border: 1px solid var(--color-border); background: var(--color-surface); }
-.sign-toggle[aria-pressed="true"] { background: #fbe4e4; border-color: var(--color-danger); color: #7a0016; }
-.amount-error { color: var(--color-danger); margin: 4px 0 0; font-size: 13px; width: 100%; }
-.failure-message { color: var(--color-amber-dark); margin: 4px 0 0; font-size: 13px; width: 100%; }
+.amount-editor button {
+  min-height: 44px; min-width: 44px; padding: 4px 10px; border-radius: var(--radius-print);
+  border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+}
+.sign-toggle[aria-pressed="true"] { background: var(--stamp); border-color: var(--stamp); color: #fff; }
+.amount-error { color: var(--stamp-text); margin: 4px 0 0; font-size: 13px; width: 100%; }
+.failure-message { color: var(--stamp-text); margin: 4px 0 0; font-size: 13px; width: 100%; }
 
-/* 行の現在の支払者(設計ドキュメント§14.1: 色+テキストで識別)。 */
+/* 行の現在の支払者(設計ドキュメント§14.1: 色+テキストで識別)。人名部分は
+   蛍光マーカー風ハイライトのチップ(§15.4)。 */
 .row-payer {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12px; font-weight: 600; color: var(--color-ink-soft);
-  background: var(--color-surface-sunken); border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 700; color: var(--ink);
+  background: var(--person-marker, transparent); border-radius: 2px 8px 4px 8px;
   padding: 2px 8px 2px 6px; margin-left: 6px;
+  overflow-wrap: anywhere; max-width: 100%;
 }
-.row-payer.person-color-0 { --person-accent: var(--person-color-0); }
-.row-payer.person-color-1 { --person-accent: var(--person-color-1); }
-.row-payer.person-color-2 { --person-accent: var(--person-color-2); }
-.row-payer.person-color-3 { --person-accent: var(--person-color-3); }
-.row-payer.person-color-4 { --person-accent: var(--person-color-4); }
-.row-payer.person-color-5 { --person-accent: var(--person-color-5); }
-.row-payer.person-color-6 { --person-accent: var(--person-color-6); }
-.row-payer.person-color-7 { --person-accent: var(--person-color-7); }
+.row-payer.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
+.row-payer.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
+.row-payer.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
+.row-payer.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
+.row-payer.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
+.row-payer.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
+.row-payer.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
+.row-payer.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
 
-/* ピル型の状態バッジ(設計ドキュメント§5.3・§14.4)。色分けの意味付け:
-   自動読取=グリーン系/要確認・読取失敗=アンバー系/手入力・確認済=ニュートラル。
-   処理中は上記のどれとも混同しないよう専用の`badge-processing`を使う
-   (ReceiptRowが`row.processing`のときは`badge-${row.status}`ではなくこちらを使う)。 */
+/* 状態バッジ(設計ドキュメント§15.4)。
+   - 自動読取: 印字風のモノスペーステキスト(枠なし・インク色)
+   - 確認済/手入力: 朱肉の判子風(朱色の枠+わずかな回転・透過背景)
+   - 要確認/読取失敗: 朱色塗りのピル(白文字、AA確保)
+   - 処理中: どの状態色とも混同しない専用スタイル+点滅する印字カーソル */
 .badge {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: var(--radius-pill); margin-left: 6px;
+  font-size: 12px; font-weight: 700; margin-left: 6px;
 }
 .badge-auto-high {
-  background: var(--color-accent-tint); border: 1px solid var(--color-accent); color: var(--color-accent-dark);
-}
-.badge-needs-review, .badge-failed {
-  background: var(--color-amber-tint); border: 1px solid var(--color-amber); color: var(--color-amber-dark);
+  font-family: var(--font-mono); color: var(--ink); background: none; border: none; padding: 0;
 }
 .badge-confirmed, .badge-manual {
-  background: var(--color-neutral-tint); border: 1px solid var(--color-neutral-border); color: var(--color-neutral-dark);
+  font-family: var(--font-mono); letter-spacing: 0.02em;
+  border: 1.5px solid var(--stamp); color: var(--stamp-text); background: transparent;
+  padding: 1px 10px; border-radius: var(--radius-print); transform: rotate(-3deg);
+}
+.badge-needs-review, .badge-failed {
+  background: var(--stamp); color: #fff; border-radius: var(--radius-pill); padding: 2px 10px;
 }
 .badge-processing {
-  background: var(--color-processing-tint); border: 1px solid var(--color-processing); color: var(--color-processing);
+  font-family: var(--font-mono); color: var(--ink-faded); background: none; border: none; padding: 0;
 }
 
-/* 処理中の行本体は失敗色(黄)と混同しないよう専用クラスで分離する(Codexレビュー指摘M2)。 */
-.status-needs-review, .status-failed { background: var(--color-amber-tint); }
-.is-processing { background: var(--color-processing-tint); }
+/* 処理中の行本体・要確認/失敗の行本体は、それぞれ淡いウォッシュで区別する
+   (Codexレビュー指摘M2: 処理中は失敗色と混同しない専用クラス)。淡い着色のみで、
+   行内のテキストは常に濃い`--ink`のため、どのウォッシュに乗ってもコントラストは
+   実質変わらない(14:1超)。 */
+.status-needs-review, .status-failed { background: color-mix(in srgb, var(--stamp) 6%, var(--paper)); }
+.is-processing { background: color-mix(in srgb, var(--ink) 5%, var(--paper)); }
 .status-auto-high, .status-confirmed, .status-manual { background: transparent; }
 
-/* 処理中のスピナー(軽量なCSSアニメーション、設計ドキュメント§14.4)。装飾のみで
-   aria-hiddenにし、意味は隣接するテキスト(「処理中…」)が担う。 */
-@keyframes receipt-scanner-spin { to { transform: rotate(360deg); } }
-.spinner {
-  display: inline-block; width: 10px; height: 10px;
-  border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
-  animation: receipt-scanner-spin 0.8s linear infinite;
-  flex: none;
+/* 処理中インジケータ: 点滅する印字カーソル「▮」(設計ドキュメント§15.5)。
+   文字はCSS生成コンテンツ(::before)で描画するため、要素自体のtextContentは
+   空のまま(バッジ内の「処理中…」テキストとDOM上で混ざらない)。 */
+@keyframes print-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.print-cursor {
+  display: inline-block; width: 0.6em;
+  font-family: var(--font-mono); color: var(--ink);
 }
-/* 無限回転はprefers-reduced-motion:reduceの利用者には無効化する(Codexレビュー指摘Minor#1)。
-   意味自体は隣接テキスト(「処理中…」)が担うため、静止表示になっても情報は失われない。 */
+.print-cursor::before {
+  content: "▮";
+  animation: print-cursor-blink 1s steps(1) infinite;
+}
 @media (prefers-reduced-motion: reduce) {
-  .spinner {
-    animation: none;
-  }
+  .print-cursor::before { animation: none; }
 }
 
 .candidates { margin-top: 4px; }
 .candidates button, .row-actions button, .retry-button { min-height: 44px; min-width: 44px; }
 .candidates button {
-  border-radius: var(--radius-pill); border: 1px solid var(--color-border); background: var(--color-surface);
+  border-radius: var(--radius-print); border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
   margin-left: 4px; padding: 4px 10px;
 }
 .retry-button {
-  margin-top: 4px; padding: 6px 12px; border-radius: var(--radius-pill);
-  border: 1px solid var(--color-amber); background: var(--color-amber-tint); color: var(--color-amber-dark); font-weight: 600;
+  margin-top: 4px; padding: 6px 12px; border-radius: var(--radius-print);
+  border: 1.5px solid var(--stamp); background: var(--paper); color: var(--ink); font-weight: 700;
 }
 .row-actions { display: flex; flex-direction: column; gap: 4px; }
 .row-actions button {
-  padding: 4px 8px; border-radius: var(--radius-chip); border: 1px solid var(--color-border); background: var(--color-surface);
+  padding: 4px 8px; border-radius: var(--radius-print); border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
 }
+.row-actions button[aria-label$="削除"] { border-color: var(--stamp); }
 
-.error { color: var(--color-danger); }
+.error { color: var(--stamp-text); }
 .cancel-all {
   min-height: 44px; padding: 8px 14px; margin: 4px 0 14px;
-  border-radius: var(--radius-pill); border: 1px solid var(--color-danger); background: #fbe4e4; color: #7a0016; font-weight: 600;
+  border-radius: var(--radius-print); border: 1.5px solid var(--stamp); background: var(--paper); color: var(--ink); font-weight: 700;
 }
-.ocr-status { color: var(--color-ink-soft); font-size: 14px; }
+.ocr-status { color: var(--ink-faded); font-size: 14px; }
 .ocr-model-error {
-  background: var(--color-amber-tint); border: 1px solid var(--color-amber); border-radius: var(--radius-card);
-  padding: 10px 12px; margin-bottom: 14px;
+  border: 1.5px solid var(--stamp); border-radius: var(--radius-print);
+  padding: 10px 12px; margin-bottom: 14px; background: var(--paper);
 }
-.ocr-model-error button { min-height: 44px; padding: 8px 14px; border-radius: var(--radius-pill); border: 1px solid var(--color-amber); background: var(--color-surface); font-weight: 600; }
+.ocr-model-error button {
+  min-height: 44px; padding: 8px 14px; border-radius: var(--radius-print); border: 1.5px solid var(--ink);
+  background: var(--paper); color: var(--ink); font-weight: 700;
+}
 
 /* ---------------------------------------------------------------------
-   手動追加フォーム(設計ドキュメント§14.4)。
+   手動追加フォーム(設計ドキュメント§15.4)。
    --------------------------------------------------------------------- */
 .manual-entry {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 12px 14px;
+  padding-top: 4px;
   margin-top: 0;
   margin-bottom: 14px;
   display: flex; flex-direction: column; gap: 8px;
 }
-.manual-entry h2 { font-size: 14px; font-weight: 700; margin: 0; }
+.manual-entry h2 { font-size: 14px; font-weight: 800; margin: 0; letter-spacing: 0.04em; }
 .manual-entry input, .manual-entry select {
-  font-size: 16px; min-height: 44px; padding: 4px 10px; border: 1px solid var(--color-neutral-border); border-radius: var(--radius-chip);
-  background: var(--color-surface-sunken);
+  font-size: 16px; min-height: 44px; padding: 4px 10px; border: 1.5px solid var(--ink); border-radius: var(--radius-print);
+  background: var(--paper); color: var(--ink);
 }
 .manual-entry-amount { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .manual-entry-amount input { width: 8em; flex: none; }
 .manual-entry-amount .sign-toggle { min-height: 44px; min-width: 44px; padding: 4px 10px; }
-/* 白文字(#fff)と`--color-accent`(#5b8266)の組み合わせはコントラスト比約4.35:1で
-   通常文字のWCAG AA基準(4.5:1)を下回る(Codexレビュー指摘I6)。`--color-accent-dark`
-   (#3f6b4c)なら約6.14:1でAAを満たす。 */
+/* 主要CTA(設計ドキュメント§15.4): インク黒のベタ塗りボタン+白文字(14.97:1)。 */
 .manual-entry > button[type="submit"] {
-  min-height: 44px; padding: 8px 18px; align-self: flex-start; border-radius: var(--radius-pill);
-  border: 1px solid var(--color-accent-dark); background: var(--color-accent-dark); color: #fff; font-weight: 700;
+  min-height: 44px; padding: 8px 18px; align-self: flex-start; border-radius: var(--radius-print);
+  border: 1.5px solid var(--ink); background: var(--ink); color: var(--paper); font-weight: 700;
 }
-.manual-entry-error { color: var(--color-danger); margin: 0; font-size: 13px; }
+.manual-entry-error { color: var(--stamp-text); margin: 0; font-size: 13px; }
 
 /* ---------------------------------------------------------------------
-   集計パネル(画面下部固定、設計ドキュメント§5.5/§14.3/§14.4)。
+   集計パネル(画面下部固定、設計ドキュメント§5.5/§14.3/§15.4)。
+   「合 計」欄の様式: 上に二重線、紙と同素材で下部固定。
    --------------------------------------------------------------------- */
 .summary-panel {
   position: fixed; bottom: 0; left: 0; right: 0;
-  background: var(--color-surface);
-  border-top: 1px solid var(--color-border);
-  border-radius: 18px 18px 0 0;
+  background-color: var(--paper);
+  background-image: var(--paper-texture);
+  border-top: 6px double var(--ink);
   box-shadow: var(--shadow-panel);
-  padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+  padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
   max-width: 640px; margin: 0 auto;
 }
-.summary-totals { font-size: 16px; display: flex; flex-wrap: wrap; gap: 4px 0; }
-.summary-person { display: inline-flex; align-items: center; gap: 5px; }
-.summary-person.person-color-0 { --person-accent: var(--person-color-0); }
-.summary-person.person-color-1 { --person-accent: var(--person-color-1); }
-.summary-person.person-color-2 { --person-accent: var(--person-color-2); }
-.summary-person.person-color-3 { --person-accent: var(--person-color-3); }
-.summary-person.person-color-4 { --person-accent: var(--person-color-4); }
-.summary-person.person-color-5 { --person-accent: var(--person-color-5); }
-.summary-person.person-color-6 { --person-accent: var(--person-color-6); }
-.summary-person.person-color-7 { --person-accent: var(--person-color-7); }
-.summary-panel .delta { margin-top: 4px; font-weight: 700; color: var(--color-accent-dark); }
-.summary-panel .warn { color: var(--color-amber-dark); margin-top: 4px; font-weight: 600; }
+.summary-heading {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-weight: 800;
+  letter-spacing: 0.5em;
+  font-size: 13px;
+  color: var(--ink-faded);
+}
+.summary-totals { display: flex; flex-direction: column; gap: 4px; }
+.summary-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+/* 人の名前は自由入力・長さ無制限のため、金額(常に右端で折り返さず全体を表示)を
+   押し出さないよう、名前側だけを縮小・折り返し可能にする(web-design-guidelines監査、
+   §15.7: flexの子はmin-width:0がないと縮小・折り返しできない)。 */
+.summary-person {
+  display: inline-flex; align-items: center; gap: 5px; font-weight: 700;
+  background: var(--person-marker, transparent); border-radius: 2px 8px 4px 8px; padding: 1px 6px;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.summary-amount { flex: none; }
+.summary-person.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
+.summary-person.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
+.summary-person.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
+.summary-person.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
+.summary-person.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
+.summary-person.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
+.summary-person.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
+.summary-person.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
+.summary-amount { font-size: 20px; font-weight: 800; color: var(--ink); }
+.summary-panel .delta { margin-top: 6px; font-weight: 700; color: var(--ink); border-top: var(--rule-dashed); padding-top: 6px; }
+.summary-panel .warn { color: var(--stamp-text); margin-top: 4px; font-weight: 700; }
 .summary-panel .panel-actions { display: flex; gap: 8px; margin-top: 10px; }
 .summary-panel .panel-actions button {
-  min-height: 44px; padding: 8px 12px; flex: 1; border-radius: var(--radius-pill); font-weight: 700;
+  min-height: 44px; padding: 8px 12px; flex: 1; border-radius: var(--radius-print); font-weight: 700;
 }
-/* 白文字と`--color-accent`の組み合わせがAA基準を満たさない件は「追加」ボタンと同じ
-   (Codexレビュー指摘I6)。`--color-accent-dark`に差し替える。 */
+/* 主要CTA(結果をコピー)はインク黒のベタ塗り+白文字。「新しい月を始める」は
+   印刷物らしい枠線ボタンにする(§15.4)。 */
 .summary-panel .panel-actions button:first-child {
-  border: 1px solid var(--color-accent-dark); background: var(--color-accent-dark); color: #fff;
+  border: 1.5px solid var(--ink); background: var(--ink); color: var(--paper);
 }
 .summary-panel .panel-actions button:last-child {
-  border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-ink);
+  border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
 }
 
-/* ソフトキーボード出現時に入力欄が隠れないための余白(Codexレビュー指摘I5)。
-   従来は`.amount-editor input`だけに付与しており、手動追加フォームには無かった
-   (Codexレビュー最終ゲート指摘I3)。論理プロパティ(縦書き非対応スコープなので
-   実質`scroll-margin-bottom`と同じ)で両方に揃える。 */
+/* ソフトキーボード出現時に入力欄が隠れないための余白(Codexレビュー指摘I5)。 */
 .manual-entry input,
 .manual-entry select,
 .amount-editor input,
@@ -483,14 +564,9 @@ main > h1 {
  * 表示座標を誤ることが報告されている(WebKit bug 312149 / 311821)。手動入力は
  * このアプリで必須の復旧経路(§9)なので、金額編集・手動追加フォームのいずれかの
  * input/selectがフォーカスされている間は固定を解除し、通常のドキュメントフローに
- * 戻す(Codexレビュー最終ゲート指摘I3)。`:has()`未対応ブラウザでは何もしない
- * (`@supports`でフィーチャーチェックしているため、その場合は従来通りの固定のまま)。
- * §14.4のデザイン刷新でパネルに角丸・影を追加したが、このフォールバック機構
- * そのものは変更していない(position:staticになった際は角丸・影は単に無効化される)。
- *
- * 新設した名前編集入力(`.person-name-editor input`)もこの解除条件に含める
- * (Codexレビュー指摘I4)。含めないと、名前編集中だけ固定パネルが解除されず
- * ソフトキーボードに隠れる退行になる。
+ * 戻す(Codexレビュー最終ゲート指摘I3)。`:has()`未対応ブラウザでは何もしない。
+ * v1.2でレイアウトの主要コンテナが`main`から`.receipt-paper`へ移った(ジグザグの
+ * 紙エッジをsummary-panel以外の範囲に限定するため)ため、解除対象もそれに追従する。
  */
 @supports selector(body:has(input:focus)) {
   body:has(
@@ -500,6 +576,7 @@ main > h1 {
     .person-name-editor input:focus
   ) .summary-panel {
     position: static;
+    box-shadow: none;
   }
 
   body:has(
@@ -507,8 +584,22 @@ main > h1 {
     .manual-entry input:focus,
     .manual-entry select:focus,
     .person-name-editor input:focus
-  ) main {
-    /* 固定パネル解除中は、パネル分の予約(220px)ではなく通常の余白でよい */
-    padding-bottom: 12px;
+  ) .receipt-paper {
+    /* 固定パネル解除中は、パネル分の予約(230px)ではなく通常の余白でよい */
+    padding-bottom: 22px;
   }
+}
+
+/* フォーカスリング(アクセシビリティ: 全インタラクティブ要素で視認できること)。
+   朱色は紙(#FCFBF7)に対して4.83:1、非テキストコントラスト基準(3:1)を満たす。 */
+:focus-visible {
+  outline: 2px solid var(--stamp);
+  outline-offset: 2px;
+}
+
+/* 印字アニメーション・点滅カーソルは`prefers-reduced-motion: reduce`で全停止する
+   (設計ドキュメント§15.5)。 */
+@media (prefers-reduced-motion: reduce) {
+  .receipt-row { animation: none; }
+  .print-cursor::before { animation: none; }
 }
