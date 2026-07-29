@@ -298,6 +298,17 @@ main {
   padding-bottom: 14px;
   margin-bottom: 0;
 }
+
+/* 撮り方ヒント(`.superpowers/sdd/ocr-investigation.md`調査結論)。取り込みボタン群の直下に
+   常時表示する装飾的な案内文。レシートモチーフに馴染む控えめな印字風スタイル
+   (薄れた印字色--ink-faded・モノスペース)にする。 */
+.capture-hint {
+  margin: 0 0 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-faded);
+}
 .payer-group {
   flex: 1;
   min-width: 150px;

@@ -1,6 +1,7 @@
-import type { OcrEngine } from "./engine";
+import type { OcrEngine, OcrLine } from "./engine";
 import type { RowPatch } from "../state/reducer";
 import type { FailureKind } from "../types";
+import type { ExtractResult } from "../extract/extractTotal";
 import {
   loadAsCanvas,
   enhanceContrast,
@@ -70,6 +71,43 @@ const defaultDeps: OcrQueueDeps = { loadAsCanvas, enhanceContrast, toThumbnailBl
 function releaseCanvas(canvas: HTMLCanvasElement): void {
   canvas.width = 1;
   canvas.height = 1;
+}
+
+/**
+ * [仮説C] コントラスト再試行のゲート閾値(調査由来: `.superpowers/sdd/ocr-investigation.md`
+ * Phase3仮説C)。
+ *
+ * 調査前は`status !== "auto-high"`のみで無条件に2回目のOCR(`enhanceContrast`再試行)を
+ * 実行していたが、Phase 1の実測で「読みにくい写真ほど遅い」という複合症状(2回分で
+ * 約2倍の処理時間)が確認された。一方、劣化画像9条件すべてで再試行が最終結果
+ * (status/amountYen)を変えたケースは無かった(常に同じ結果に収束していた)ため、
+ * 「本当に読みにくい画像」だけに再試行を絞ることで精度を落とさずに処理時間を削減できる。
+ *
+ * ゲート条件: 1回目の認識行数が`RETRY_MIN_LINES`未満、**または**1回目の平均confidenceが
+ * `RETRY_MAX_AVG_CONFIDENCE`未満の場合のみ再試行する。confidence統計値は「平均
+ * (confStat=avg)」を採用する。「最良の1行(confStat=max)」で試したところ、劣化画像でも
+ * ヘッダー/フッター等の読みやすい行が1つは残るためほぼ常に閾値を超えてしまい、
+ * ゲートの判別力が失われることを調査で確認したため。
+ *
+ * 閾値(行数15・平均confidence0.85)は調査で使った合成劣化データセットに基づく初期値であり、
+ * 実機データでの再チューニングが必要(調査レポート「Phase 3: 仮説C」の限界節を参照)。
+ */
+const RETRY_MIN_LINES = 15;
+const RETRY_MAX_AVG_CONFIDENCE = 0.85;
+
+function averageConfidence(lines: OcrLine[]): number {
+  if (lines.length === 0) return 0;
+  return lines.reduce((sum, l) => sum + l.confidence, 0) / lines.length;
+}
+
+/**
+ * 1回目の認識結果からコントラスト再試行が必要かを判定する。
+ * `status === "auto-high"`は従来通り無条件に再試行しない(既に成功しているため)。
+ */
+function shouldRetryWithContrast(status: ExtractResult["status"], lines: OcrLine[]): boolean {
+  if (status === "auto-high") return false;
+  if (lines.length < RETRY_MIN_LINES) return true;
+  return averageConfidence(lines) < RETRY_MAX_AVG_CONFIDENCE;
 }
 
 /**
@@ -231,12 +269,14 @@ export function createOcrQueue(
     let enhanced: HTMLCanvasElement | undefined;
     let patch: RowPatch;
     try {
-      const firstResult = extractTotal(await engine.recognize(canvas));
+      const firstLines = await engine.recognize(canvas);
+      const firstResult = extractTotal(firstLines);
 
       let result = firstResult;
-      if (firstResult.status !== "auto-high") {
-        // 二段階前処理: auto-high以外は常にコントラスト補正で再試行する
-        // (「failedのみ再試行」ではなく、needs-reviewも含めて再試行する。
+      if (shouldRetryWithContrast(firstResult.status, firstLines)) {
+        // 二段階前処理: [仮説C]のゲートに従い、1回目が読みにくい(行数が少ない、
+        // または平均confidenceが低い)場合のみコントラスト補正で再試行する
+        // (「failedのみ再試行」ではなく、needs-reviewも含めて再試行しうる。
         // Task 4スパイクのpickBestAttempt方針と揃えている)。
         // 再試行自体(補正処理/2回目認識)が例外を投げても、1回目の有効な結果を
         // 失わないようbest-effortとして扱う(Codexレビュー指摘: 再試行失敗で

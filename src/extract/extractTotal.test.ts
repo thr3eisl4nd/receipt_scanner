@@ -122,4 +122,76 @@ describe("extractTotal", () => {
     expect(r.status).toBe("needs-review");
     expect(r.candidates).toEqual([1100, 100]);
   });
+
+  // --- [仮説A] ラベルのOCR崩れ耐性(.superpowers/sdd/ocr-investigation.md Phase3仮説A)---
+  // 調査で観測された「合計」のOCR誤認識パターンへの耐性を検証する。段階1(観測済み崩れ
+  // バリアント)は通常の強ラベルと同じ扱い、段階2/3(単独文字・ゆるい照合)は弱い加点に留め、
+  // どの経路でもauto-highの60点に届かないスコア設計であること(誤自動確定の数学的防止)も
+  // あわせて確認する。
+
+  test("観測済みの崩れバリアント(含計/合针/合计/台計)は通常の強ラベルと同じくauto-highになりうる", () => {
+    for (const variant of ["含計", "合针", "合计", "台計"]) {
+      const r = extractTotal([line(variant, 140), line("¥1,332", 140, 200)]);
+      expect(r.status).toBe("auto-high");
+      expect(r.amountYen).toBe(1332);
+    }
+  });
+
+  test("「合」単独(調査で観測した崩れケース、¥788)はneeds-review・788が候補1位になる", () => {
+    // 調査レポート7.2節の実データ(anchor画像)を模したケース: 「合計」が「合」1文字に
+    // 脱落し、小計・8%対象・内消費税・お預りが周囲に並ぶ。
+    const r = extractTotal([
+      line("小計", 100), line("¥788", 100, 200),
+      line("8%対象", 140), line("¥788", 140, 200),
+      line("内消費税", 180), line("¥58", 180, 200),
+      line("合", 220), line("¥788", 220, 200),
+      line("お預り", 260), line("¥1,000", 260, 200),
+    ]);
+    expect(r.status).toBe("needs-review");
+    expect(r.amountYen).toBe(788);
+    expect(r.candidates[0]).toBe(788);
+  });
+
+  test("「計」単独でも同様にneeds-review止まりで拾える(auto-highにはならない)", () => {
+    const r = extractTotal([line("計", 140), line("¥788", 140, 200)]);
+    expect(r.status).toBe("needs-review");
+    expect(r.amountYen).toBe(788);
+  });
+
+  test("短い行に限定したゆるい照合(編集距離1)でも「合計」の崩れを拾える(例: 合訃)", () => {
+    const r = extractTotal([line("合訃", 140), line("¥788", 140, 200)]);
+    expect(r.status).toBe("needs-review");
+    expect(r.amountYen).toBe(788);
+  });
+
+  test("安全弁: 「小計」は編集距離1で「合計」に近いが弱ラベルとして誤認識しない(REJECT_LABELS優先)", () => {
+    // 「小計」だけが残り「合計」ラベルが完全に消失した敵対的ケース。
+    // 小計自体が弱ラベル候補になってしまうと、REJECT_LABELSによる同一行減点(-100)を
+    // 回避してauto-high誤爆に繋がりかねないため、明示的に除外する安全弁がある。
+    const r = extractTotal([
+      line("小計", 100), line("¥1,234", 100, 200),
+      line("お預り", 140), line("¥2,000", 140, 200),
+      line("お釣り", 180), line("¥766", 180, 200),
+    ]);
+    expect(r.status).toBe("failed");
+    expect(r.amountYen).toBeNull();
+  });
+
+  test("弱ラベル経由の候補はどの経路でもauto-highにならない(高confidence・好条件でも)", () => {
+    // 「合」単独ラベル自体が高confidenceで、円記号あり・下半分配置など好条件が揃っても、
+    // スコア設計上60点に届かないためauto-highへは到達しない。
+    const r = extractTotal([
+      line("合", 400, 0, 0.99),
+      line("¥788", 400, 200, 0.99),
+    ]);
+    expect(r.status).toBe("needs-review");
+  });
+
+  test("既存の回帰フィクスチャ(標準レシート等)は本変更で結果が変わらない", () => {
+    expect(extractTotal(fx.supermarket).status).toBe("auto-high");
+    expect(extractTotal(fx.supermarket).amountYen).toBe(1332);
+    expect(extractTotal(fx.taxBreakdown).status).toBe("auto-high");
+    expect(extractTotal(fx.genkei).status).toBe("auto-high");
+    expect(extractTotal(fx.truncated).status).toBe("failed");
+  });
 });

@@ -126,6 +126,15 @@ describe("App", () => {
     expect(list?.children.length).toBe(0);
   });
 
+  it("取り込みボタン群の直下に撮り方ヒントを常時表示する(調査結論: 占有率が支配要因・傾きが副次要因、.superpowers/sdd/ocr-investigation.md)", () => {
+    const { container } = render(<App />);
+
+    const hint = container.querySelector(".capture-hint");
+    expect(hint?.textContent).toBe("レシートを画面いっぱい・まっすぐ・ピントを合わせて撮ると読み取り精度が上がります");
+    // ボタン群(.add-buttons)の直後(兄弟要素)に配置されている
+    expect(container.querySelector(".add-buttons")?.nextElementSibling).toBe(hint);
+  });
+
   it("取り込みボタン群は人リストから動的生成される(2人・3人でも人数分だけ生成される、設計ドキュメント§14.1)", () => {
     seedTwoPeople();
     const { container } = render(<App />);
@@ -555,7 +564,11 @@ describe("App", () => {
     { failureKind: "image-decode", message: "画像を読み込めません。JPEGまたはPNGで追加してください", canRetry: false },
     { failureKind: "unsupported-format", message: "この画像形式には対応していません", canRetry: false },
     { failureKind: "image-too-large", message: "画像が大きすぎます。縮小してから追加してください", canRetry: false },
-    { failureKind: "ocr", message: "文字を読み取れませんでした。金額を手入力してください", canRetry: true },
+    {
+      failureKind: "ocr",
+      message: "文字を読み取れませんでした。画面いっぱいに撮り直すか、金額を手入力してください",
+      canRetry: true,
+    },
   ];
 
   for (const testCase of failureKindCases) {

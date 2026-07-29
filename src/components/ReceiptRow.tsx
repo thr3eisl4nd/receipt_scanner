@@ -26,7 +26,9 @@ const FAILURE_MESSAGE: Record<FailureKind, string> = {
   "image-decode": "画像を読み込めません。JPEGまたはPNGで追加してください",
   "unsupported-format": "この画像形式には対応していません",
   "image-too-large": "画像が大きすぎます。縮小してから追加してください",
-  ocr: "文字を読み取れませんでした。金額を手入力してください",
+  // 「画面いっぱいに撮り直す」の案内は占有率(実効解像度)が失敗の支配要因という調査結論
+  // (`.superpowers/sdd/ocr-investigation.md`)に基づく、回復手段としての具体的な行動提示。
+  ocr: "文字を読み取れませんでした。画面いっぱいに撮り直すか、金額を手入力してください",
 };
 
 /**

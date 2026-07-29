@@ -34,6 +34,13 @@ function makeEngine(recognizeImpl: (canvas: HTMLCanvasElement) => OcrLine[] | Pr
 
 const line = (text = "x"): OcrLine => ({ text, confidence: 0.9, box: { x: 0, y: 0, width: 10, height: 10 } });
 
+/** [仮説C]再試行ゲートのテスト専用: 行数・confidenceを個別に制御したいのでconfidenceを引数化する。 */
+const lineWithConfidence = (confidence: number, text = "行"): OcrLine => ({
+  text,
+  confidence,
+  box: { x: 0, y: 0, width: 10, height: 10 },
+});
+
 function resultOf(
   status: ExtractResult["status"],
   amountYen: number | null = 1000,
@@ -133,6 +140,79 @@ describe("createOcrQueue", () => {
       candidates: [900, 950],
       processing: false,
     });
+  });
+
+  // --- [仮説C] コントラスト再試行のゲート(.superpowers/sdd/ocr-investigation.md Phase3仮説C)の回帰テスト ---
+  // 従来は`status !== "auto-high"`のみで無条件に2回目のOCRを実行していたが、調査により
+  // 「1回目のconfidenceが十分高く行数も十分あるのに読みにくい画像と誤判定して再試行し、
+  // 処理時間だけが倍になる」ケースが判明した。1回目の認識行数・平均confidenceで
+  // 「本当に読みにくい画像か」を判別し、そうでなければ2回目を省略する。
+
+  it("高confidence・多数行のneeds-reviewでは再試行しない(仮説Cゲート: 行数十分・平均confidence十分高い)", async () => {
+    const deps = makeDeps();
+    // 20行、全行confidence0.95(平均0.95 >= 閾値0.85、行数20 >= 閾値15) → ゲートは「再試行不要」と判定するはず
+    const manyHighConfLines = Array.from({ length: 20 }, () => lineWithConfidence(0.95));
+    const engine = makeEngine(() => manyHighConfLines);
+    extractTotalMock.mockReturnValue(resultOf("needs-review", 900, [900, 950]));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(engine.recognize).toHaveBeenCalledTimes(1);
+    expect(deps.enhanceContrast).not.toHaveBeenCalled();
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: 900,
+      status: "needs-review",
+      candidates: [900, 950],
+      processing: false,
+    });
+  });
+
+  it("行数が十分でも平均confidenceが閾値未満なら再試行する(仮説Cゲート)", async () => {
+    const deps = makeDeps();
+    // 20行(閾値15以上)だが全行confidence0.7(平均0.7 < 閾値0.85) → 再試行が発火するはず
+    const manyLowConfLines = Array.from({ length: 20 }, () => lineWithConfidence(0.7));
+    const engine = makeEngine(() => manyLowConfLines);
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("needs-review", 900, [900, 950]))
+      .mockReturnValueOnce(resultOf("auto-high", 950, [950]));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
+    expect(engine.recognize).toHaveBeenCalledTimes(2);
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: 950,
+      status: "auto-high",
+      candidates: [950],
+      processing: false,
+    });
+  });
+
+  it("行数が閾値未満なら平均confidenceが高くても再試行する(仮説Cゲート: 行数不足のsparse判定)", async () => {
+    const deps = makeDeps();
+    // 5行(閾値15未満)、全行confidence0.95(平均は高い) → 行数不足で再試行が発火するはず
+    const fewHighConfLines = Array.from({ length: 5 }, () => lineWithConfidence(0.95));
+    const engine = makeEngine(() => fewHighConfLines);
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("needs-review", 900, [900, 950]))
+      .mockReturnValueOnce(resultOf("auto-high", 950, [950]));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
+    expect(engine.recognize).toHaveBeenCalledTimes(2);
   });
 
   it("処理後にcanvasを明示解放する(width/height=1)。再試行時はenhanced版も解放する", async () => {

@@ -360,6 +360,12 @@ export default function App() {
           onRemove={(id) => dispatch({ type: "removePerson", id })}
         />
         <AddReceiptButtons people={state.people} onFiles={onFiles} />
+        {/* 撮り方ヒント(調査結論: `.superpowers/sdd/ocr-investigation.md`。占有率(レシートが
+            画面に占める割合=実効解像度)が失敗の最も支配的な単独要因、傾きは副次要因。
+            取り込みボタン群の直下に常時表示する装飾的な案内文で、機能には影響しない。 */}
+        <p className="capture-hint">
+          レシートを画面いっぱい・まっすぐ・ピントを合わせて撮ると読み取り精度が上がります
+        </p>
 
         {/* 切り取り線装飾(設計ドキュメント§15.4、装飾のみ・aria-hidden)。 */}
         <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
