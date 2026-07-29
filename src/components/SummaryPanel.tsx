@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { buildSummaryText, computeTotals, formatDelta, type AppState } from "../state/reducer";
+import { personColorClass } from "../personColor";
 
 type Props = { state: AppState; onNewMonth(): void };
 
@@ -35,7 +36,13 @@ export function SummaryPanel({ state, onNewMonth }: Props) {
         {t.totals.map((total, i) => (
           <span key={total.personId}>
             {i > 0 && " / "}
-            {total.name}: <b>{yen(total.amountYen)}円</b>
+            {/* 人別テーマカラーのドットは装飾のみ(aria-hidden)。色だけに頼らず
+                名前テキストを併記する(既存a11y方針、設計ドキュメント§14.1・§14.4)。 */}
+            <span className={`summary-person ${personColorClass(total.colorIndex)}`}>
+              <span className="person-dot" aria-hidden="true" />
+              {total.name}
+            </span>
+            : <b>{yen(total.amountYen)}円</b>
           </span>
         ))}
       </div>

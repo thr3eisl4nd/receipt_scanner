@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { Person } from "../types";
+import { personColorClass } from "../personColor";
 
 type Props = { people: Person[]; onFiles(payerId: string, files: File[]): void };
 
@@ -16,10 +17,15 @@ export function AddReceiptButtons({ people, onFiles }: Props) {
   };
 
   return (
-    <section className="add-buttons">
+    <section className="add-buttons" aria-label="レシートを追加">
       {people.map((person) => (
-        <div className="payer-group" key={person.id}>
-          <h2>{person.name}のレシート</h2>
+        <div className={`payer-group ${personColorClass(person.colorIndex)}`} key={person.id}>
+          <h2>
+            {/* 人別テーマカラーのドット(装飾のみ・色だけに頼らず名前テキストを併記、
+                設計ドキュメント§14.1・§14.4)。 */}
+            <span className="person-dot" aria-hidden="true" />
+            {person.name}のレシート
+          </h2>
           {/* 人ごとの「アルバムから選ぶ」「カメラで撮る」は視覚的なテキストが同一のため、
               スクリーンリーダーのボタン一覧で対象を判別できない(Codexレビュー指摘I9)。
               aria-labelで行き先を明示する(表示テキスト自体は変更しない)。 */}

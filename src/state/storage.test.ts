@@ -153,7 +153,7 @@ describe("v1→v2自動移行(設計ドキュメント§14.2)", () => {
     rows,
   });
 
-  test("husband行のみ: 人「夫」だけを生成し、全行がそのpayerIdを参照する", () => {
+  test("husband行のみ: 「夫」「妻」の両方を常に生成し(v1利用者は夫婦2人運用だったため)、行は夫のpayerIdのみを参照する", () => {
     const v1 = v1Base([
       { id: "a", payer: "husband", amountYen: 1000, label: "レシート 1", status: "confirmed", source: "ocr" },
       { id: "b", payer: "husband", amountYen: 2000, label: "レシート 2", status: "auto-high", source: "ocr" },
@@ -163,8 +163,9 @@ describe("v1→v2自動移行(設計ドキュメント§14.2)", () => {
     expect(v2.version).toBe(2);
     expect(v2.month).toBe(v1.month);
     expect(v2.updatedAt).toBe(v1.updatedAt);
-    expect(v2.people).toHaveLength(1);
+    expect(v2.people).toHaveLength(2);
     expect(v2.people[0]).toMatchObject({ name: "夫", colorIndex: 0 });
+    expect(v2.people[1]).toMatchObject({ name: "妻", colorIndex: 1 });
     const husbandId = v2.people[0].id;
     expect(v2.rows).toEqual([
       { id: "a", payerId: husbandId, amountYen: 1000, label: "レシート 1", status: "confirmed", source: "ocr" },
@@ -172,16 +173,17 @@ describe("v1→v2自動移行(設計ドキュメント§14.2)", () => {
     ]);
   });
 
-  test("wife行のみ: 人「妻」だけを生成し、全行がそのpayerIdを参照する", () => {
+  test("wife行のみ: 「夫」「妻」の両方を常に生成し、行は妻のpayerIdのみを参照する", () => {
     const v1 = v1Base([
       { id: "a", payer: "wife", amountYen: 3000, label: "レシート 1", status: "manual", source: "manual" },
     ]);
     const v2 = migrateV1ToV2(v1);
 
-    expect(v2.people).toHaveLength(1);
-    expect(v2.people[0]).toMatchObject({ name: "妻", colorIndex: 0 });
+    expect(v2.people).toHaveLength(2);
+    expect(v2.people[0]).toMatchObject({ name: "夫", colorIndex: 0 });
+    expect(v2.people[1]).toMatchObject({ name: "妻", colorIndex: 1 });
     expect(v2.rows).toEqual([
-      { id: "a", payerId: v2.people[0].id, amountYen: 3000, label: "レシート 1", status: "manual", source: "manual" },
+      { id: "a", payerId: v2.people[1].id, amountYen: 3000, label: "レシート 1", status: "manual", source: "manual" },
     ]);
   });
 
@@ -203,16 +205,17 @@ describe("v1→v2自動移行(設計ドキュメント§14.2)", () => {
     expect(v2.rows[2]).toMatchObject({ id: "c", amountYen: null, label: "レシート 3", status: "failed" });
   });
 
-  test("空(rowsが0件): 人が1人以上必要という不変条件を満たすため既定で「夫」を1人生成する", () => {
+  test("空(rowsが0件)でも「夫」「妻」の両方を生成する(v1利用者は夫婦2人運用だったため、行の有無に関わらず両方生成する)", () => {
     const v1 = v1Base([]);
     const v2 = migrateV1ToV2(v1);
 
-    expect(v2.people).toHaveLength(1);
+    expect(v2.people).toHaveLength(2);
     expect(v2.people[0]).toMatchObject({ name: "夫", colorIndex: 0 });
+    expect(v2.people[1]).toMatchObject({ name: "妻", colorIndex: 1 });
     expect(v2.rows).toEqual([]);
   });
 
-  test("移行結果はisValidV2相当の検証を満たし、loadStateでv1データを読むと自動的にv2として返る", () => {
+  test("移行結果はisValidV2相当の検証を満たし、loadStateでv1データを読むと自動的にv2として返る(両方の人が生成される)", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify(
@@ -223,8 +226,8 @@ describe("v1→v2自動移行(設計ドキュメント§14.2)", () => {
     const loaded = loadState();
     expect(loaded).not.toBeNull();
     expect(loaded?.version).toBe(2);
-    expect(loaded?.people).toHaveLength(1);
-    expect(loaded?.people[0].name).toBe("妻");
-    expect(loaded?.rows[0].payerId).toBe(loaded?.people[0].id);
+    expect(loaded?.people).toHaveLength(2);
+    expect(loaded?.people.map((p) => p.name)).toEqual(["夫", "妻"]);
+    expect(loaded?.rows[0].payerId).toBe(loaded?.people[1].id);
   });
 });

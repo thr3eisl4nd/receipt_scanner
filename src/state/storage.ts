@@ -75,23 +75,25 @@ function isValidV2(v: unknown): v is PersistedState {
 }
 
 const LEGACY_PERSON_NAME: Record<LegacyPayer, string> = { husband: "夫", wife: "妻" };
-/** legacy payer値の登場順を固定するための優先順位(「夫」→「妻」の順でcolorIndexを振る)。 */
+/** legacy payer値の生成順(「夫」→「妻」の順でcolorIndexを振る)。 */
 const LEGACY_PAYER_ORDER: LegacyPayer[] = ["husband", "wife"];
 
 /**
- * v1データの自動移行(設計ドキュメント§14.2)。`payer:"husband"`が登場すれば人「夫」、
- * `payer:"wife"`が登場すれば人「妻」を生成してpayerIdへ変換する。実際に登場したpayer値
- * のみ人として生成する(使っていない側の人が不要に増えないようにする)。行が1件もない
- * (=どちらのpayer値も登場しない)場合でもpeopleは1人以上が必須(§14.2)のため、
- * 既定で「夫」を1人だけ生成する。行データ自体は一切失わない(進行中の月のデータを消さない)。
+ * v1データの自動移行(設計ドキュメント§14.2、2026-07-29改訂: v1利用者は夫婦2人運用
+ * だったため、行の有無に関わらず「夫」「妻」の両方を常に生成する)。
+ *
+ * 旧実装は実際にrowsへ登場したpayer値のみ人として生成していた(例: husband行しか
+ * 無ければ「夫」だけを生成)。しかしv1(夫/妻固定)は常に夫婦2人での運用を前提とした
+ * スキーマであり、「妻の行がまだ無いだけ」(=これから追加される)なのか「妻という
+ * 人がそもそも存在しない」のかをv1データ単体からは区別できない。片方しか生成しないと、
+ * 移行直後に妻の取り込みボタンが無い状態になり、ユーザーは「+ 人を追加」で自分で
+ * 妻を作り直す羽目になる(移行の意図に反する)。v1データが存在する(=移行対象として
+ * 呼ばれる)時点で夫婦2人運用だったとみなし、行の有無に関わらず常に両方を生成する。
+ * 行データ自体は一切失わない(進行中の月のデータを消さない)。
  */
 export function migrateV1ToV2(v1: PersistedStateV1): PersistedState {
-  const usedPayers = new Set<LegacyPayer>(v1.rows.map((r) => r.payer));
-  if (usedPayers.size === 0) usedPayers.add("husband");
-  const order = LEGACY_PAYER_ORDER.filter((payer) => usedPayers.has(payer));
-
   const idByPayer = new Map<LegacyPayer, string>();
-  const people: Person[] = order.map((payer, index) => {
+  const people: Person[] = LEGACY_PAYER_ORDER.map((payer, index) => {
     const id = crypto.randomUUID();
     idByPayer.set(payer, id);
     return { id, name: LEGACY_PERSON_NAME[payer], colorIndex: index };

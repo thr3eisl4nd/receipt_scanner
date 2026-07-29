@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent,
 import type { FailureKind, Person, Row } from "../types";
 import type { RowPatch } from "../state/reducer";
 import { parseYenInput, toggleYenSign, isNegativeYenInput } from "../moneyInput";
+import { personColorClass } from "../personColor";
 
 const STATUS_LABEL: Record<Row["status"], string> = {
   "auto-high": "自動読取",
@@ -187,9 +188,19 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
       <div className="row-main">
         <span className="row-label">{row.label}</span>
         {/* 3人以上では「→次の人へ」ボタンは次の遷移先しか示さないため、行の現在の
-            支払者を色+テキストで識別できるよう明示する(設計ドキュメント§14.1)。 */}
-        <span className="row-payer">{currentPerson?.name ?? "不明"}</span>
-        <span className={`badge badge-${row.status}`}>
+            支払者を色+テキストで識別できるよう明示する(設計ドキュメント§14.1)。
+            人別テーマカラーのドットは装飾のみ(aria-hidden)で、識別の主手段は
+            引き続き名前テキスト(color+テキスト併記、既存a11y方針)。 */}
+        <span className={`row-payer ${personColorClass(currentPerson?.colorIndex ?? 0)}`}>
+          <span className="person-dot" aria-hidden="true" />
+          {currentPerson?.name ?? "不明"}
+        </span>
+        {/* 状態バッジ(設計ドキュメント§14.4): 自動読取=グリーン系/要確認・読取失敗=
+            アンバー系/手入力・確認済=ニュートラル。処理中はどの状態色とも混同しない
+            専用の`badge-processing`+軽量スピナーにする(row.statusがまだ"failed"の
+            ままでもアンバー表示にならないようにする)。 */}
+        <span className={`badge ${row.processing ? "badge-processing" : `badge-${row.status}`}`}>
+          {row.processing && <span className="spinner" aria-hidden="true" />}
           {row.processing ? "処理中…" : STATUS_LABEL[row.status]}
         </span>
         {editing ? (

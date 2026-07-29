@@ -1,5 +1,6 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import type { Person, Row } from "../types";
+import { personColorClass } from "../personColor";
 
 type Props = {
   people: Person[];
@@ -103,7 +104,10 @@ export function PeopleManager({ people, rows, onAdd, onRename, onRemove }: Props
         {people.map((person) => {
           const reason = deleteDisabledReason(person, people.length, rows);
           return (
-            <li key={person.id} className="person-item">
+            <li key={person.id} className={`person-item ${personColorClass(person.colorIndex)}`}>
+              {/* 人別テーマカラーのドット(装飾のみ・色だけに頼らず名前テキストを併記、
+                  設計ドキュメント§14.1・§14.4)。 */}
+              <span className="person-dot" aria-hidden="true" />
               <PersonNameEditor name={person.name} onRename={(name) => onRename(person.id, name)} />
               <button
                 type="button"
