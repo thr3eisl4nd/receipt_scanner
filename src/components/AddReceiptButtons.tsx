@@ -1,50 +1,66 @@
 import { useRef } from "react";
-import type { Payer } from "../types";
+import type { Person } from "../types";
 
-type Props = { onFiles(payer: Payer, files: File[]): void };
+type Props = { people: Person[]; onFiles(payerId: string, files: File[]): void };
 
-const PAYER_LABEL: Record<Payer, string> = { husband: "夫", wife: "妻" };
+export function AddReceiptButtons({ people, onFiles }: Props) {
+  // 人数が可変になったため、人ごとに固定refを持つのではなくid→要素のMapで管理する
+  // (設計ドキュメント§14.1: 取り込みボタン群は人リストから動的生成)。
+  const albumRefs = useRef(new Map<string, HTMLInputElement>());
+  const cameraRefs = useRef(new Map<string, HTMLInputElement>());
 
-export function AddReceiptButtons({ onFiles }: Props) {
-  const albumHusband = useRef<HTMLInputElement>(null);
-  const albumWife = useRef<HTMLInputElement>(null);
-  const cameraHusband = useRef<HTMLInputElement>(null);
-  const cameraWife = useRef<HTMLInputElement>(null);
-
-  const handle = (payer: Payer) => (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handle = (payerId: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = [...(e.target.files ?? [])];
-    if (files.length > 0) onFiles(payer, files);
+    if (files.length > 0) onFiles(payerId, files);
     e.target.value = ""; // 同じファイルの再選択を可能に
   };
 
   return (
     <section className="add-buttons">
-      {(["husband", "wife"] as const).map((payer) => (
-        <div className="payer-group" key={payer}>
-          <h2>{PAYER_LABEL[payer]}のレシート</h2>
-          {/* 夫妻それぞれの「アルバムから選ぶ」「カメラで撮る」は視覚的なテキストが同一のため、
+      {people.map((person) => (
+        <div className="payer-group" key={person.id}>
+          <h2>{person.name}のレシート</h2>
+          {/* 人ごとの「アルバムから選ぶ」「カメラで撮る」は視覚的なテキストが同一のため、
               スクリーンリーダーのボタン一覧で対象を判別できない(Codexレビュー指摘I9)。
               aria-labelで行き先を明示する(表示テキスト自体は変更しない)。 */}
           <button
             type="button"
-            aria-label={`${PAYER_LABEL[payer]}のレシートをアルバムから選ぶ`}
-            onClick={() => (payer === "husband" ? albumHusband : albumWife).current?.click()}
+            aria-label={`${person.name}のレシートをアルバムから選ぶ`}
+            onClick={() => albumRefs.current.get(person.id)?.click()}
           >
             アルバムから選ぶ
           </button>
           <button
             type="button"
-            aria-label={`${PAYER_LABEL[payer]}のレシートをカメラで撮る`}
-            onClick={() => (payer === "husband" ? cameraHusband : cameraWife).current?.click()}
+            aria-label={`${person.name}のレシートをカメラで撮る`}
+            onClick={() => cameraRefs.current.get(person.id)?.click()}
           >
             カメラで撮る
           </button>
+          <input
+            ref={(el) => {
+              if (el) albumRefs.current.set(person.id, el);
+              else albumRefs.current.delete(person.id);
+            }}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={handle(person.id)}
+          />
+          <input
+            ref={(el) => {
+              if (el) cameraRefs.current.set(person.id, el);
+              else cameraRefs.current.delete(person.id);
+            }}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            hidden
+            onChange={handle(person.id)}
+          />
         </div>
       ))}
-      <input ref={albumHusband} type="file" accept="image/*" multiple hidden onChange={handle("husband")} />
-      <input ref={cameraHusband} type="file" accept="image/*" capture="environment" hidden onChange={handle("husband")} />
-      <input ref={albumWife} type="file" accept="image/*" multiple hidden onChange={handle("wife")} />
-      <input ref={cameraWife} type="file" accept="image/*" capture="environment" hidden onChange={handle("wife")} />
     </section>
   );
 }

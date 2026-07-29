@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { AddReceiptButtons } from "./components/AddReceiptButtons";
+import { PeopleManager } from "./components/PeopleManager";
 import { ReceiptRow } from "./components/ReceiptRow";
 import { ManualEntryForm } from "./components/ManualEntryForm";
 import { SummaryPanel } from "./components/SummaryPanel";
@@ -7,11 +8,21 @@ import { createOcrQueue, type OcrQueue, type QueueStatusEvent } from "./ocr/queu
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
 import { reducer, toPersisted, fromPersisted, computeTotals, type AppState, type RowPatch } from "./state/reducer";
 import { saveState, loadState, currentMonth, clearState } from "./state/storage";
-import type { Payer, Row } from "./types";
+import type { Row } from "./types";
 
+const yen = (n: number) => n.toLocaleString("ja-JP");
+
+// 初回起動(永続化データが無い)時のデフォルト状態は人1人・初期名「わたし」(設計ドキュメント§14.1)。
 const initialState = (): AppState => {
   const persisted = loadState();
-  return persisted ? fromPersisted(persisted) : { month: currentMonth(), rows: [], saveFailed: false };
+  return persisted
+    ? fromPersisted(persisted)
+    : {
+        month: currentMonth(),
+        people: [{ id: crypto.randomUUID(), name: "わたし", colorIndex: 0 }],
+        rows: [],
+        saveFailed: false,
+      };
 };
 
 const RECEIPT_LABEL_RE = /^レシート (\d+)$/;
@@ -158,11 +169,12 @@ export default function App() {
     };
   }, []);
 
-  // 自動保存(画像以外)。失敗はUI表示
+  // 自動保存(画像以外)。失敗はUI表示。people変更(追加/改名/削除)も保存対象なので
+  // 依存配列に含める(v1.1で人が永続化データの一部になったため)。
   useEffect(() => {
     dispatch({ type: "setSaveFailed", value: !saveState(toPersisted(state)) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.month, state.rows]);
+  }, [state.month, state.rows, state.people]);
 
   // 行(rowId)に対して新しい試行(jobId)を発行してenqueueする。以前その行に紐づいて
   // いたjobId(あれば)はここで置き換えられ、以後は「アクティブでない」ため、後から
@@ -175,7 +187,7 @@ export default function App() {
     queueRef.current?.enqueue(jobId, file);
   };
 
-  const onFiles = (payer: Payer, files: File[]) => {
+  const onFiles = (payerId: string, files: File[]) => {
     const rows: Row[] = [];
     const labelFor = nextReceiptLabel(state.rows);
     let offset = 1;
@@ -188,7 +200,7 @@ export default function App() {
       const id = crypto.randomUUID();
       rows.push({
         id,
-        payer,
+        payerId,
         amountYen: null,
         label: labelFor(offset++),
         status: "failed",
@@ -266,10 +278,9 @@ export default function App() {
   //    画像の処理がその後ろに並んでしまう(Codexレビュー指摘。行自体は既に無くなるため
   //    結果が反映されて実害が出ることはないが、無駄な処理・待ち時間を発生させる)。
   const onNewMonth = () => {
-    const t = computeTotals(state.rows);
-    const ok = window.confirm(
-      `${state.month} のデータ(夫 ${t.husbandYen.toLocaleString("ja-JP")}円 / 妻 ${t.wifeYen.toLocaleString("ja-JP")}円)を消去して新しい月を始めますか?`,
-    );
+    const t = computeTotals(state.people, state.rows);
+    const totalsText = t.totals.map((p) => `${p.name} ${yen(p.amountYen)}円`).join(" / ");
+    const ok = window.confirm(`${state.month} のデータ(${totalsText})を消去して新しい月を始めますか?`);
     if (!ok) return;
     if (!clearState()) {
       window.alert("保存データを削除できませんでした。時間をおいて再試行してください。");
@@ -290,7 +301,7 @@ export default function App() {
   // 「金額確認待ち N件」を表示する(Codexレビュー最終ゲート指摘Minor#3・設計ドキュメント
   // §5.2)。固定パネル側の「⚠ 未確認 N件」(SummaryPanel)は常時表示の非ライブ領域だが、
   // こちらはOCR完了の一連の流れ(準備中→処理中→…)の続きとしてライブ領域で通知する。
-  const reviewPendingCount = computeTotals(state.rows).unconfirmed;
+  const reviewPendingCount = computeTotals(state.people, state.rows).unconfirmed;
   const ocrStatusText = !hasPendingWork && reviewPendingCount > 0
     ? `金額確認待ち ${reviewPendingCount}件`
     : ocrEvent?.kind === "preparing"
@@ -304,7 +315,14 @@ export default function App() {
   return (
     <main>
       <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
-      <AddReceiptButtons onFiles={onFiles} />
+      <PeopleManager
+        people={state.people}
+        rows={state.rows}
+        onAdd={() => dispatch({ type: "addPerson" })}
+        onRename={(id, name) => dispatch({ type: "renamePerson", id, name })}
+        onRemove={(id) => dispatch({ type: "removePerson", id })}
+      />
+      <AddReceiptButtons people={state.people} onFiles={onFiles} />
 
       {ocrEvent?.kind === "model-error" ? (
         <div role="alert" className="error ocr-model-error">
@@ -326,6 +344,7 @@ export default function App() {
           <ReceiptRow
             key={row.id}
             row={row}
+            people={state.people}
             rowNumber={index + 1}
             canRetry={retryFilesRef.current.has(row.id)}
             onPatch={(id, patch) => {
@@ -337,7 +356,7 @@ export default function App() {
           />
         ))}
       </ul>
-      <ManualEntryForm onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
+      <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
       <SummaryPanel state={state} onNewMonth={onNewMonth} />
     </main>
   );

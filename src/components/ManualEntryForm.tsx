@@ -1,8 +1,8 @@
 import { useState } from "react";
-import type { Payer, Row } from "../types";
+import type { Person, Row } from "../types";
 import { parseYenInput, toggleYenSign, isNegativeYenInput } from "../moneyInput";
 
-type Props = { onAdd(row: Row): void };
+type Props = { people: Person[]; onAdd(row: Row): void };
 
 /**
  * レシートのない支出(家賃・光熱費等)を「名前+金額+誰が払ったか」で追加するフォーム
@@ -24,11 +24,16 @@ type FieldError = { field: "label" | "amount"; message: string };
 
 const ERROR_ID = "manual-entry-error";
 
-export function ManualEntryForm({ onAdd }: Props) {
+export function ManualEntryForm({ people, onAdd }: Props) {
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState("");
-  const [payer, setPayer] = useState<Payer>("husband");
+  const [payerId, setPayerId] = useState<string>(() => people[0]?.id ?? "");
   const [error, setError] = useState<FieldError | null>(null);
+
+  // 選択中の人が削除された場合のフォールバック。人の削除はその人の行が0件のときのみ
+  // 許可されるが、このフォームで選択中の人自体は削除操作の対象になりうるため、
+  // 現在のpeopleに存在しなければ先頭の人へフォールバックする(設計ドキュメント§14.1)。
+  const selectedPayerId = people.some((p) => p.id === payerId) ? payerId : (people[0]?.id ?? "");
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,7 +49,7 @@ export function ManualEntryForm({ onAdd }: Props) {
     }
     onAdd({
       id: crypto.randomUUID(),
-      payer,
+      payerId: selectedPayerId,
       amountYen: parsed,
       label: trimmedLabel,
       status: "manual",
@@ -102,9 +107,12 @@ export function ManualEntryForm({ onAdd }: Props) {
           返品・取消として入力
         </button>
       </div>
-      <select value={payer} onChange={(e) => setPayer(e.target.value as Payer)} aria-label="支払った人">
-        <option value="husband">夫が支払い</option>
-        <option value="wife">妻が支払い</option>
+      <select value={selectedPayerId} onChange={(e) => setPayerId(e.target.value)} aria-label="支払った人">
+        {people.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}が支払い
+          </option>
+        ))}
       </select>
       <button type="submit">追加</button>
       {error && (

@@ -64,6 +64,26 @@ const amountEditLabel = (label: string) => `${label}の金額を編集`;
 const confirmLabel = (label: string) => `${label}の金額を確定`;
 const signToggleLabel = (label: string) => `${label}を返品・取消として入力`;
 
+/**
+ * v1.1(設計ドキュメント§14)でデフォルト状態は人1人(初期名「わたし」)になった
+ * (Task 12)。夫/妻の付け替え・複数人分の取り込みボタン等、2人前提のテストは
+ * この固定2人構成をlocalStorageへ直接書き込んでから`render(<App />)`する。
+ */
+const TWO_PEOPLE_STATE = {
+  version: 2,
+  month: "2026-07",
+  updatedAt: "2026-07-27T10:00:00.000Z",
+  people: [
+    { id: "husband-id", name: "夫", colorIndex: 0 },
+    { id: "wife-id", name: "妻", colorIndex: 1 },
+  ],
+  rows: [],
+};
+
+function seedTwoPeople() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(TWO_PEOPLE_STATE));
+}
+
 describe("App", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -94,30 +114,70 @@ describe("App", () => {
     cleanup();
   });
 
-  it("初期表示: タイトル・取り込みボタン・空の一覧が表示される", () => {
+  it("初期表示: タイトル・人1人(わたし)分の取り込みボタン・空の一覧が表示される(設計ドキュメント§14.1のデフォルト状態)", () => {
     const { container } = render(<App />);
 
     expect(screen.getByRole("heading", { level: 1 }).textContent).toContain("レシート清算スキャナー");
-    // 夫妻で同じ視覚テキスト("アルバムから選ぶ"等)のボタンは、スクリーンリーダーの
+    expect(screen.getByRole("button", { name: "わたしのレシートをアルバムから選ぶ" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "わたしのレシートをカメラで撮る" })).toBeTruthy();
+    expect(container.querySelectorAll('input[type="file"]')).toHaveLength(2);
+
+    const list = container.querySelector(".receipt-list");
+    expect(list?.children.length).toBe(0);
+  });
+
+  it("取り込みボタン群は人リストから動的生成される(2人・3人でも人数分だけ生成される、設計ドキュメント§14.1)", () => {
+    seedTwoPeople();
+    const { container } = render(<App />);
+
+    // 同じ視覚テキスト("アルバムから選ぶ"等)のボタンは、スクリーンリーダーの
     // ボタン一覧で対象を判別できるようaria-labelで行き先を明示する(Codexレビュー指摘I9)。
     expect(screen.getByRole("button", { name: "夫のレシートをアルバムから選ぶ" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "妻のレシートをアルバムから選ぶ" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "夫のレシートをカメラで撮る" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "妻のレシートをカメラで撮る" })).toBeTruthy();
+    expect(container.querySelectorAll('input[type="file"]')).toHaveLength(4);
 
-    const list = container.querySelector(".receipt-list");
-    expect(list?.children.length).toBe(0);
+    // 「+ 人を追加」でボタン群も増える(既に2人いるので新規追加分は「3人目」)
+    fireEvent.click(screen.getByRole("button", { name: "+ 人を追加" }));
+    expect(screen.getByRole("button", { name: "3人目のレシートをアルバムから選ぶ" })).toBeTruthy();
+    expect(container.querySelectorAll('input[type="file"]')).toHaveLength(6);
+  });
+
+  it("人の改名は取り込みボタン・手動追加の選択肢へ反映され、行が残っている人の削除は拒否される(設計ドキュメント§14.1)", () => {
+    seedTwoPeople();
+    render(<App />);
+
+    // 改名
+    fireEvent.click(screen.getByRole("button", { name: "夫の名前を編集" }));
+    fireEvent.change(screen.getByLabelText("人の名前"), { target: { value: "パパ" } });
+    fireEvent.blur(screen.getByLabelText("人の名前"));
+
+    expect(screen.getByRole("button", { name: "パパのレシートをアルバムから選ぶ" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "夫のレシートをアルバムから選ぶ" })).toBeNull();
+
+    // 手動追加フォームの選択肢にも反映される
+    const options = [...(screen.getByLabelText("支払った人") as HTMLSelectElement).options].map((o) => o.textContent);
+    expect(options).toEqual(["パパが支払い", "妻が支払い"]);
+
+    // ファイルを1件追加すると、その人(パパ)の削除は拒否される
+    const fileInputs = document.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+
+    const deleteButton = screen.getByRole("button", { name: "パパを削除" }) as HTMLButtonElement;
+    expect(deleteButton.disabled).toBe(true);
+    expect(screen.getByText(/パパの行が1件あるため削除できません/)).toBeTruthy();
   });
 
   it("ファイル追加→処理中表示→OCR結果反映→金額タップ編集の一連の流れ", async () => {
     const { container } = render(<App />);
 
     const fileInputs = container.querySelectorAll('input[type="file"]');
-    expect(fileInputs.length).toBe(4);
-    const albumHusbandInput = fileInputs[0] as HTMLInputElement;
+    expect(fileInputs.length).toBe(2);
+    const albumInput = fileInputs[0] as HTMLInputElement;
 
     const file = new File(["dummy-bytes"], "receipt.png", { type: "image/png" });
-    selectFile(albumHusbandInput, file);
+    selectFile(albumInput, file);
 
     // 行が即座に追加され、処理中バッジが出る。フル画像のObject URLはこの時点では
     // 作られない(サムネイルはOCRキューのonThumbnailで後から届く。Codexレビュー指摘I1)
@@ -643,6 +703,7 @@ describe("App", () => {
   });
 
   it("夫⇄妻の切り替え、および削除ボタンで行を除去できる(削除時はサムネイル・プレビューURLも解放)", async () => {
+    seedTwoPeople();
     const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
     try {
       const { container } = render(<App />);
@@ -673,6 +734,7 @@ describe("App", () => {
   });
 
   it("複数行があっても削除・payer切替ボタンのアクセシブルネームが行ごとに一意になる(Codexレビュー指摘I9)", () => {
+    seedTwoPeople();
     const { container } = render(<App />);
     const fileInputs = container.querySelectorAll('input[type="file"]');
     selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
@@ -683,6 +745,51 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "レシート 2（2行目）を削除" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "レシート 1（1行目）を妻の支払いへ変更" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "レシート 2（2行目）を妻の支払いへ変更" })).toBeTruthy();
+  });
+
+  it("人が1人しかいないときは行の付け替え(→次の人へ)ボタンを表示しない(設計ドキュメント§14.1)", () => {
+    const { container } = render(<App />); // デフォルト状態は人1人(わたし)
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+
+    const row = container.querySelector(".receipt-row") as HTMLElement;
+    // 現在の支払者は色+テキストで表示される
+    expect(within(row).getByText("わたし")).toBeTruthy();
+    // 付け替え先が無いため、循環ボタン自体が存在しない
+    expect(within(row).queryByRole("button", { name: /支払いへ変更/ })).toBeNull();
+  });
+
+  it("人が3人のときは「→次の人へ」ボタンで人の並び順に循環する(2人時は実質トグル、設計ドキュメント§14.1)", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        month: "2026-07",
+        updatedAt: "2026-07-27T10:00:00.000Z",
+        people: [
+          { id: "p1", name: "Aさん", colorIndex: 0 },
+          { id: "p2", name: "Bさん", colorIndex: 1 },
+          { id: "p3", name: "Cさん", colorIndex: 2 },
+        ],
+        rows: [],
+      }),
+    );
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]'); // Aさんのアルバム入力
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+
+    const row = container.querySelector(".receipt-row") as HTMLElement;
+    expect(within(row).getByText("Aさん")).toBeTruthy();
+    expect(within(row).getByText("→Bさんへ")).toBeTruthy();
+
+    fireEvent.click(within(row).getByText("→Bさんへ"));
+    expect(within(row).getByText("Bさん")).toBeTruthy();
+    expect(within(row).getByText("→Cさんへ")).toBeTruthy();
+
+    fireEvent.click(within(row).getByText("→Cさんへ"));
+    expect(within(row).getByText("Cさん")).toBeTruthy();
+    // 3人目の次は先頭(Aさん)へ循環する
+    expect(within(row).getByText("→Aさんへ")).toBeTruthy();
   });
 
   it("同名の手動行が複数あっても、行番号によって削除ボタンのアクセシブルネームが一意になる(Codexレビュー最終ゲート指摘Minor#2)", () => {
@@ -707,7 +814,7 @@ describe("App", () => {
       const { container, unmount } = render(<App />);
       const fileInputs = container.querySelectorAll('input[type="file"]');
       selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
-      selectFile(fileInputs[2] as HTMLInputElement, new File(["b"], "b.png"));
+      selectFile(fileInputs[0] as HTMLInputElement, new File(["b"], "b.png"));
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(2);
 
       // 両行にサムネイル・プレビューが届いた状態にする(I1: 追加直後はthumbnailUrlを
@@ -775,11 +882,12 @@ describe("App", () => {
   });
 
   it("手動追加フォームから行を追加すると一覧・集計に反映される(Task 10)", () => {
+    seedTwoPeople();
     render(<App />);
 
     fireEvent.change(screen.getByLabelText("支出の名前"), { target: { value: "家賃" } });
     fireEvent.change(screen.getByLabelText("追加する金額(円)"), { target: { value: "80000" } });
-    fireEvent.change(screen.getByLabelText("支払った人"), { target: { value: "wife" } });
+    fireEvent.change(screen.getByLabelText("支払った人"), { target: { value: "wife-id" } });
     fireEvent.click(screen.getByRole("button", { name: "追加" }));
 
     expect(screen.getByText("家賃")).toBeTruthy();
@@ -857,8 +965,8 @@ describe("App", () => {
       revokeSpy.mockClear();
       fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
 
-      // 確認ダイアログには現在の集計(夫合計)が含まれる
-      expect(confirmSpy.mock.calls[0][0]).toContain("夫 1,000円");
+      // 確認ダイアログには現在の集計(人別合計)が含まれる
+      expect(confirmSpy.mock.calls[0][0]).toContain("わたし 1,000円");
 
       // 全行クリアされる
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
@@ -868,6 +976,11 @@ describe("App", () => {
       // localStorageには旧行データを含まない、新しい(空の)月の状態が保存される
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) as string);
       expect(stored.rows).toEqual([]);
+      // 人(people)は月をまたいで引き継がれる(設計ドキュメント§14.5: 人ごとの履歴はスコープ外だが、
+      // 人そのものは家計を共にするメンバーであり月次リセット対象ではない)
+      expect(stored.people).toHaveLength(1);
+      expect(stored.people[0].name).toBe("わたし");
+      expect(screen.getByRole("button", { name: "わたしのレシートをアルバムから選ぶ" })).toBeTruthy();
 
       // 重複検出用Set(seenFiles)がクリアされているため、同じファイルを再度追加しても
       // 「追加済みのようです」の確認ダイアログは出ない

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type PointerEvent } from "react";
-import type { FailureKind, Row } from "../types";
+import type { FailureKind, Person, Row } from "../types";
 import type { RowPatch } from "../state/reducer";
 import { parseYenInput, toggleYenSign, isNegativeYenInput } from "../moneyInput";
 
@@ -39,6 +39,8 @@ export const parseYen = parseYenInput;
 
 type Props = {
   row: Row;
+  /** 支払者選択・「→次の人へ」循環ボタンの生成元(設計ドキュメント§14.1)。 */
+  people: Person[];
   /** 一覧内での表示順(1始まり)。同名の手動行が複数あってもaria-labelを一意にするために使う
    *  (Codexレビュー最終ゲート指摘Minor#2)。 */
   rowNumber: number;
@@ -49,7 +51,7 @@ type Props = {
   onRetry(id: string): void;
 };
 
-export function ReceiptRow({ row, rowNumber, canRetry, onPatch, onRemove, onRetry }: Props) {
+export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove, onRetry }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -161,6 +163,13 @@ export function ReceiptRow({ row, rowNumber, canRetry, onPatch, onRemove, onRetr
 
   const displayAmount = row.amountYen === null ? "金額を入力" : `${row.amountYen.toLocaleString("ja-JP")}円`;
 
+  // 支払者の付け替えは「→次の人へ」の循環ボタン(設計ドキュメント§14.1)。人が1人しか
+  // いない場合は付け替え自体が無意味なのでボタンごと非表示にする。2人の場合は実質的な
+  // トグル(2人しかいないので次の人=もう片方)になる。
+  const currentPersonIndex = people.findIndex((p) => p.id === row.payerId);
+  const currentPerson = currentPersonIndex >= 0 ? people[currentPersonIndex] : undefined;
+  const nextPerson = people.length > 1 ? people[(currentPersonIndex + 1) % people.length] : undefined;
+
   return (
     <li className={`receipt-row ${row.processing ? "is-processing" : `status-${row.status}`}`}>
       {row.thumbnailUrl && (
@@ -177,6 +186,9 @@ export function ReceiptRow({ row, rowNumber, canRetry, onPatch, onRemove, onRetr
       )}
       <div className="row-main">
         <span className="row-label">{row.label}</span>
+        {/* 3人以上では「→次の人へ」ボタンは次の遷移先しか示さないため、行の現在の
+            支払者を色+テキストで識別できるよう明示する(設計ドキュメント§14.1)。 */}
+        <span className="row-payer">{currentPerson?.name ?? "不明"}</span>
         <span className={`badge badge-${row.status}`}>
           {row.processing ? "処理中…" : STATUS_LABEL[row.status]}
         </span>
@@ -276,13 +288,15 @@ export function ReceiptRow({ row, rowNumber, canRetry, onPatch, onRemove, onRetr
         )}
       </div>
       <div className="row-actions">
-        <button
-          type="button"
-          aria-label={`${row.label}（${rowNumber}行目）を${row.payer === "husband" ? "妻" : "夫"}の支払いへ変更`}
-          onClick={() => onPatch(row.id, { payer: row.payer === "husband" ? "wife" : "husband" })}
-        >
-          {row.payer === "husband" ? "→妻へ" : "→夫へ"}
-        </button>
+        {nextPerson && (
+          <button
+            type="button"
+            aria-label={`${row.label}（${rowNumber}行目）を${nextPerson.name}の支払いへ変更`}
+            onClick={() => onPatch(row.id, { payerId: nextPerson.id })}
+          >
+            →{nextPerson.name}へ
+          </button>
+        )}
         <button type="button" aria-label={`${row.label}（${rowNumber}行目）を削除`} onClick={() => onRemove(row.id)}>
           削除
         </button>
