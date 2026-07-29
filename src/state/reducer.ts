@@ -1,4 +1,5 @@
 import type { Person, PersistedState, Row } from "../types";
+import { PERSON_COLOR_COUNT } from "../personColor";
 
 export type AppState = { month: string; people: Person[]; rows: Row[]; saveFailed: boolean };
 
@@ -22,6 +23,15 @@ function isYenAmount(value: number | null): boolean {
   return value === null || Number.isSafeInteger(value);
 }
 
+/** payerIdがpeopleに実在するか(参照整合性、Codexレビュー指摘I2)。v1では payer が
+ *  "husband" | "wife" の合併型で型により保護されていたが、v2では単なるstringのため、
+ *  reducer側でも保存時(isValidV2)と同じ制約を強制しないと、未知のpayerIdを持つ孤児行が
+ *  画面上の状態にだけ入り込み(集計から金額が黙って脱落する一方、自動保存はisValidV2に
+ *  拒否され続けるため画面と保存状態が分岐する)事故になる。 */
+function hasPayer(people: Person[], payerId: string): boolean {
+  return people.some((p) => p.id === payerId);
+}
+
 function assertNever(value: never): never {
   throw new Error(`Unknown action: ${JSON.stringify(value)}`);
 }
@@ -33,7 +43,10 @@ export function reducer(state: AppState, action: Action): AppState {
     case "addRows":
       return {
         ...state,
-        rows: [...state.rows, ...action.rows.filter((r) => isYenAmount(r.amountYen))],
+        rows: [
+          ...state.rows,
+          ...action.rows.filter((r) => isYenAmount(r.amountYen) && hasPayer(state.people, r.payerId)),
+        ],
       };
     case "updateRow":
       return {
@@ -41,7 +54,9 @@ export function reducer(state: AppState, action: Action): AppState {
         rows: state.rows.map((row) => {
           if (row.id !== action.id) return row;
           const next = { ...row, ...action.patch, id: row.id };
-          return isYenAmount(next.amountYen) ? next : row;
+          if (!isYenAmount(next.amountYen)) return row;
+          if (!hasPayer(state.people, next.payerId)) return row;
+          return next;
         }),
       };
     // OCR結果専用のアクション。`processing:true`の行(=まだユーザーが手修正していない、
@@ -56,7 +71,9 @@ export function reducer(state: AppState, action: Action): AppState {
         rows: state.rows.map((row) => {
           if (row.id !== action.id || !row.processing) return row;
           const next = { ...row, ...action.patch, id: row.id };
-          return isYenAmount(next.amountYen) ? next : row;
+          if (!isYenAmount(next.amountYen)) return row;
+          if (!hasPayer(state.people, next.payerId)) return row;
+          return next;
         }),
       };
     case "removeRow":
@@ -71,22 +88,43 @@ export function reducer(state: AppState, action: Action): AppState {
     // 変わらなくても毎回新しいstateオブジェクトが生成され、不要な再描画が発生する。
     case "setSaveFailed":
       return state.saveFailed === action.value ? state : { ...state, saveFailed: action.value };
-    // 「+ 人を追加」(設計ドキュメント§14.1)。初期名は「2人目」「3人目」…(現在の人数+1)、
-    // colorIndexは現在の人数をそのまま使う連番(0始まり、削除後の再追加で重複しても実害はない)。
+    // 「+ 人を追加」(設計ドキュメント§14.1)。初期名は「N人目」だが、削除後の再追加で
+    // 単純な「現在の人数+1」を使うと既存の名前と衝突しうる(例: わたし(0)/2人目(1)/3人目(2)
+    // →2人目を削除→追加すると「3人目」が2つできる)。使用中の名前を避けて連番を進める
+    // (Codexレビュー指摘I3)。
+    // colorIndexも同様に「現在の人数」をそのまま使うと削除後の再追加で既存の色と重複し、
+    // 「色+名前で識別」(§14.1)という前提が崩れる。未使用のcolorIndexをパレット内から
+    // 優先的に選び、全色使用中の場合のみ人数を丸め込んだ値へフォールバックする。
     case "addPerson": {
-      const number = state.people.length + 1;
+      const usedNames = new Set(state.people.map((p) => p.name));
+      let number = state.people.length + 1;
+      while (usedNames.has(`${number}人目`)) number += 1;
+
+      const usedColors = new Set(
+        state.people.map((p) => ((p.colorIndex % PERSON_COLOR_COUNT) + PERSON_COLOR_COUNT) % PERSON_COLOR_COUNT),
+      );
+      const colorIndex =
+        Array.from({ length: PERSON_COLOR_COUNT }, (_, i) => i).find((i) => !usedColors.has(i)) ??
+        state.people.length % PERSON_COLOR_COUNT;
+
       const person: Person = {
         id: crypto.randomUUID(),
         name: `${number}人目`,
-        colorIndex: state.people.length,
+        colorIndex,
       };
       return { ...state, people: [...state.people, person] };
     }
     // 名前のインライン編集(§14.1)。空文字(trim後)は不可で、その場合は何もしない
     // (UI側で空不可のバリデーションを行うが、reducer側でも不変条件として強制する)。
+    // trim後の名前が自分以外の誰かと完全一致する場合も拒否する(Codexレビュー指摘I3:
+    // 同名の人が複数いると、AddReceiptButtons/PeopleManagerのaria-label・コピー結果の
+    // いずれも対象を一意に指し示せなくなる)。UI側(PersonNameEditor)でも同じ判定を行い
+    // role="alert"でエラー表示するが、reducer側でも不変条件として強制する。
     case "renamePerson": {
       const trimmed = action.name.trim();
       if (trimmed === "") return state;
+      const duplicate = state.people.some((p) => p.id !== action.id && p.name === trimmed);
+      if (duplicate) return state;
       return {
         ...state,
         people: state.people.map((p) => (p.id === action.id ? { ...p, name: trimmed } : p)),

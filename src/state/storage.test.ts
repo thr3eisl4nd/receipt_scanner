@@ -77,6 +77,23 @@ describe("storage", () => {
     expect(loadState()).toBeNull();
   });
 
+  test("行IDが空文字だとnull(Codexレビュー指摘Minor#3)", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...valid, rows: [{ ...valid.rows[0], id: "" }] }));
+    expect(loadState()).toBeNull();
+  });
+
+  test("行IDが重複しているとnull(Codexレビュー指摘Minor#3: 重複するとupdateRow/removeRowが複数行へ同時作用してしまう)", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...valid, rows: [valid.rows[0], { ...valid.rows[0], amountYen: 999 }] }),
+    );
+    expect(loadState()).toBeNull();
+  });
+
+  test("saveStateも重複した行IDを拒否する(false)", () => {
+    expect(saveState({ ...valid, rows: [valid.rows[0], { ...valid.rows[0], amountYen: 999 }] })).toBe(false);
+  });
+
   test("clearStateで消える(trueを返す)", () => {
     saveState(valid);
     expect(clearState()).toBe(true);
@@ -203,6 +220,37 @@ describe("v1→v2自動移行(設計ドキュメント§14.2)", () => {
     expect(v2.rows.map((r) => r.payerId)).toEqual([husbandId, wifeId, husbandId]);
     // idやamountYen等、payer以外のフィールドはそのまま保持される(データを一切失わない)
     expect(v2.rows[2]).toMatchObject({ id: "c", amountYen: null, label: "レシート 3", status: "failed" });
+  });
+
+  test("行IDが重複していても、丸ごと拒否せず2件目以降を新UUIDへ再採番して全行を保持する(Codexレビュー指摘Minor#3)", () => {
+    const v1 = v1Base([
+      { id: "dup", payer: "husband", amountYen: 1000, label: "レシート 1", status: "confirmed", source: "ocr" },
+      { id: "dup", payer: "wife", amountYen: 2000, label: "レシート 2", status: "confirmed", source: "ocr" },
+      { id: "dup", payer: "husband", amountYen: 3000, label: "レシート 3", status: "confirmed", source: "ocr" },
+    ]);
+    const v2 = migrateV1ToV2(v1);
+
+    // データを1件も捨てない
+    expect(v2.rows).toHaveLength(3);
+    // 最初に登場したIDはそのまま、2件目以降は新しいIDへ差し替わり全行が一意になる
+    expect(v2.rows[0].id).toBe("dup");
+    expect(v2.rows[1].id).not.toBe("dup");
+    expect(v2.rows[2].id).not.toBe("dup");
+    expect(new Set(v2.rows.map((r) => r.id)).size).toBe(3);
+    // id以外のフィールドは維持される
+    expect(v2.rows.map((r) => r.amountYen)).toEqual([1000, 2000, 3000]);
+    // 再採番後も含めisValidV2相当(行ID一意)を満たすため、そのまま保存できる
+    expect(saveState(v2)).toBe(true);
+  });
+
+  test("行IDが空文字のv1データはisValidV1に拒否され、loadStateはnullを返す(v2としても不正なので移行されない)", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(
+        v1Base([{ id: "", payer: "husband", amountYen: 1000, label: "レシート 1", status: "confirmed", source: "ocr" }]),
+      ),
+    );
+    expect(loadState()).toBeNull();
   });
 
   test("空(rowsが0件)でも「夫」「妻」の両方を生成する(v1利用者は夫婦2人運用だったため、行の有無に関わらず両方生成する)", () => {

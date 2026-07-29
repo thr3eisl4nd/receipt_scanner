@@ -171,8 +171,9 @@ main > h1 {
   flex: none;
 }
 
-.person-name, .person-name-editor input { min-height: 44px; font-size: 15px; }
 .person-name {
+  min-height: 44px;
+  font-size: 15px;
   background: none;
   border: none;
   border-radius: 8px;
@@ -180,7 +181,16 @@ main > h1 {
   color: var(--color-ink);
   font-weight: 600;
 }
-.person-name-editor input { border: 1px solid var(--color-neutral-border); border-radius: 8px; padding: 4px 8px; }
+/* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大する
+   (.amount-editor inputと同じ理由)。新設した名前編集入力だけこの対策から
+   漏れていた(Codexレビュー指摘I4)ため、16pxを明示する。 */
+.person-name-editor input {
+  min-height: 44px;
+  font-size: 16px;
+  border: 1px solid var(--color-neutral-border);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
 .person-name-error { color: var(--color-danger); margin: 0; font-size: 13px; width: 100%; }
 .person-item button[aria-label$="を削除"] {
   min-height: 44px; min-width: 44px; padding: 4px 10px;
@@ -355,6 +365,13 @@ main > h1 {
   animation: receipt-scanner-spin 0.8s linear infinite;
   flex: none;
 }
+/* 無限回転はprefers-reduced-motion:reduceの利用者には無効化する(Codexレビュー指摘Minor#1)。
+   意味自体は隣接テキスト(「処理中…」)が担うため、静止表示になっても情報は失われない。 */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
 
 .candidates { margin-top: 4px; }
 .candidates button, .row-actions button, .retry-button { min-height: 44px; min-width: 44px; }
@@ -404,9 +421,12 @@ main > h1 {
 .manual-entry-amount { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .manual-entry-amount input { width: 8em; flex: none; }
 .manual-entry-amount .sign-toggle { min-height: 44px; min-width: 44px; padding: 4px 10px; }
+/* 白文字(#fff)と`--color-accent`(#5b8266)の組み合わせはコントラスト比約4.35:1で
+   通常文字のWCAG AA基準(4.5:1)を下回る(Codexレビュー指摘I6)。`--color-accent-dark`
+   (#3f6b4c)なら約6.14:1でAAを満たす。 */
 .manual-entry > button[type="submit"] {
   min-height: 44px; padding: 8px 18px; align-self: flex-start; border-radius: var(--radius-pill);
-  border: 1px solid var(--color-accent); background: var(--color-accent); color: #fff; font-weight: 700;
+  border: 1px solid var(--color-accent-dark); background: var(--color-accent-dark); color: #fff; font-weight: 700;
 }
 .manual-entry-error { color: var(--color-danger); margin: 0; font-size: 13px; }
 
@@ -438,8 +458,10 @@ main > h1 {
 .summary-panel .panel-actions button {
   min-height: 44px; padding: 8px 12px; flex: 1; border-radius: var(--radius-pill); font-weight: 700;
 }
+/* 白文字と`--color-accent`の組み合わせがAA基準を満たさない件は「追加」ボタンと同じ
+   (Codexレビュー指摘I6)。`--color-accent-dark`に差し替える。 */
 .summary-panel .panel-actions button:first-child {
-  border: 1px solid var(--color-accent); background: var(--color-accent); color: #fff;
+  border: 1px solid var(--color-accent-dark); background: var(--color-accent-dark); color: #fff;
 }
 .summary-panel .panel-actions button:last-child {
   border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-ink);
@@ -451,7 +473,8 @@ main > h1 {
    実質`scroll-margin-bottom`と同じ)で両方に揃える。 */
 .manual-entry input,
 .manual-entry select,
-.amount-editor input {
+.amount-editor input,
+.person-name-editor input {
   scroll-margin-block-end: 24px;
 }
 
@@ -464,12 +487,17 @@ main > h1 {
  * (`@supports`でフィーチャーチェックしているため、その場合は従来通りの固定のまま)。
  * §14.4のデザイン刷新でパネルに角丸・影を追加したが、このフォールバック機構
  * そのものは変更していない(position:staticになった際は角丸・影は単に無効化される)。
+ *
+ * 新設した名前編集入力(`.person-name-editor input`)もこの解除条件に含める
+ * (Codexレビュー指摘I4)。含めないと、名前編集中だけ固定パネルが解除されず
+ * ソフトキーボードに隠れる退行になる。
  */
 @supports selector(body:has(input:focus)) {
   body:has(
     .amount-editor input:focus,
     .manual-entry input:focus,
-    .manual-entry select:focus
+    .manual-entry select:focus,
+    .person-name-editor input:focus
   ) .summary-panel {
     position: static;
   }
@@ -477,7 +505,8 @@ main > h1 {
   body:has(
     .amount-editor input:focus,
     .manual-entry input:focus,
-    .manual-entry select:focus
+    .manual-entry select:focus,
+    .person-name-editor input:focus
   ) main {
     /* 固定パネル解除中は、パネル分の予約(220px)ではなく通常の余白でよい */
     padding-bottom: 12px;

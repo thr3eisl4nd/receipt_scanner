@@ -18,7 +18,14 @@ function isIsoDateTime(value: unknown): value is string {
   return Number.isFinite(Date.parse(value));
 }
 
-/** v1(夫/妻固定)スキーマの検証。移行元としてのみ使う(新規に書き出すことはない)。 */
+/**
+ * v1(夫/妻固定)スキーマの検証。移行元としてのみ使う(新規に書き出すことはない)。
+ *
+ * 行IDは非空文字列であることのみ検証し、v2と異なり一意性は検証しない
+ * (Codexレビュー指摘Minor#3)。旧アプリの不具合等で行IDが重複していた場合、
+ * ここで一意性まで強制して丸ごと`null`にすると進行中の月のデータを全部失う。
+ * 重複は`migrateV1ToV2`側で新UUIDへ再採番して修復し、データを1件も捨てない。
+ */
 function isValidV1(v: unknown): v is PersistedStateV1 {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Record<string, unknown>;
@@ -30,6 +37,7 @@ function isValidV1(v: unknown): v is PersistedStateV1 {
     const row = r as Record<string, unknown>;
     return (
       typeof row.id === "string" &&
+      row.id !== "" &&
       LEGACY_PAYERS.has(row.payer as string) &&
       (row.amountYen === null || Number.isSafeInteger(row.amountYen)) &&
       typeof row.label === "string" &&
@@ -40,7 +48,10 @@ function isValidV1(v: unknown): v is PersistedStateV1 {
 }
 
 /** v2スキーマの検証(設計ドキュメント§14.2): peopleが1人以上・IDが重複しない・
- *  名前が非空文字列であること、rows.payerIdが必ずpeopleに存在すること。他の検証水準はv1と同等。 */
+ *  名前が非空文字列であること、rows.payerIdが必ずpeopleに存在すること、行IDが非空かつ
+ *  一意であること(Codexレビュー指摘Minor#3: 重複IDがあると`updateRow`が複数行を同時
+ *  更新し`removeRow`が複数行を一括削除してしまうため)。v2はアプリ自身が書き出す形式なので、
+ *  v1のような「捨てずに修復」ではなく厳格に拒否する。 */
 function isValidV2(v: unknown): v is PersistedState {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Record<string, unknown>;
@@ -59,11 +70,13 @@ function isValidV2(v: unknown): v is PersistedState {
   }
 
   if (!Array.isArray(s.rows)) return false;
+  const rowIds = new Set<string>();
   return s.rows.every((r) => {
     if (typeof r !== "object" || r === null) return false;
     const row = r as Record<string, unknown>;
+    if (typeof row.id !== "string" || row.id === "" || rowIds.has(row.id)) return false;
+    rowIds.add(row.id);
     return (
-      typeof row.id === "string" &&
       typeof row.payerId === "string" &&
       peopleIds.has(row.payerId) &&
       (row.amountYen === null || Number.isSafeInteger(row.amountYen)) &&
@@ -99,19 +112,28 @@ export function migrateV1ToV2(v1: PersistedStateV1): PersistedState {
     return { id, name: LEGACY_PERSON_NAME[payer], colorIndex: index };
   });
 
+  // 行IDの重複をUUID再採番で修復する(Codexレビュー指摘Minor#3)。isValidV1は行IDの
+  // 一意性までは検証しない(重複していても移行対象として受理する)ため、ここで
+  // 初出のIDはそのまま残し、2回目以降に同じIDが出てきた行だけ新しいUUIDへ差し替える。
+  // 丸ごと拒否するのではなく最小限の修復に留めることで、行データを1件も捨てない。
+  const seenRowIds = new Set<string>();
   return {
     version: 2,
     month: v1.month,
     updatedAt: v1.updatedAt,
     people,
-    rows: v1.rows.map(({ id, payer, amountYen, label, status, source }) => ({
-      id,
-      payerId: idByPayer.get(payer)!, // 構築上、payerは必ずidByPayerに存在する
-      amountYen,
-      label,
-      status,
-      source,
-    })),
+    rows: v1.rows.map(({ id, payer, amountYen, label, status, source }) => {
+      const dedupedId = seenRowIds.has(id) ? crypto.randomUUID() : id;
+      seenRowIds.add(dedupedId);
+      return {
+        id: dedupedId,
+        payerId: idByPayer.get(payer)!, // 構築上、payerは必ずidByPayerに存在する
+        amountYen,
+        label,
+        status,
+        source,
+      };
+    }),
   };
 }
 

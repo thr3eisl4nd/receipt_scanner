@@ -148,6 +148,35 @@ describe("reducer", () => {
     const s = reducer(base, { type: "addRows", rows: [row({ id: "n", amountYen: null })] });
     expect(s.rows.map((r) => r.id)).toEqual(["n"]);
   });
+
+  test("addRowsは未知のpayerId(peopleに存在しない)を持つ行を拒否する(Codexレビュー指摘I2: 参照整合性)", () => {
+    const s = reducer(base, {
+      type: "addRows",
+      rows: [row({ id: "ok", payerId: HUSBAND_ID }), row({ id: "orphan", payerId: "not-a-real-person" })],
+    });
+    expect(s.rows.map((r) => r.id)).toEqual(["ok"]);
+  });
+
+  test("updateRowはpatchで未知のpayerIdへ書き換えようとすると行を変更しない(Codexレビュー指摘I2)", () => {
+    const s = reducer(base, { type: "addRows", rows: [row({ id: "a", payerId: HUSBAND_ID })] });
+    const next = reducer(s, { type: "updateRow", id: "a", patch: { payerId: "not-a-real-person" } });
+    expect(next.rows[0].payerId).toBe(HUSBAND_ID);
+    expect(next.rows[0]).toBe(s.rows[0]); // 変更されていない証跡
+  });
+
+  test("applyOcrResultも未知のpayerIdへの書き換えを拒否する(Codexレビュー指摘I2)", () => {
+    const s = reducer(base, {
+      type: "addRows",
+      rows: [row({ id: "a", payerId: HUSBAND_ID, amountYen: null, status: "failed", processing: true })],
+    });
+    const next = reducer(s, {
+      type: "applyOcrResult",
+      id: "a",
+      patch: { payerId: "not-a-real-person", amountYen: 1000, status: "auto-high", processing: false },
+    });
+    expect(next.rows[0].payerId).toBe(HUSBAND_ID);
+    expect(next.rows[0].amountYen).toBeNull();
+  });
 });
 
 describe("addPerson/renamePerson/removePerson", () => {
@@ -171,6 +200,29 @@ describe("addPerson/renamePerson/removePerson", () => {
     expect(new Set(s.people.map((p) => p.id)).size).toBe(3);
   });
 
+  test("addPersonは削除後の再追加で名前・色が同時に重複しない(Codexレビュー指摘I3): わたし(0)/2人目(1)/3人目(2)→2人目削除→追加 で「わたし」「3人目」「4人目」・色0/2/1になる", () => {
+    let s = reducer(onePerson, { type: "addPerson" }); // わたし, 2人目(color1)
+    s = reducer(s, { type: "addPerson" }); // わたし, 2人目(color1), 3人目(color2)
+    expect(s.people.map((p) => p.name)).toEqual(["わたし", "2人目", "3人目"]);
+
+    const secondPersonId = s.people[1].id;
+    s = reducer(s, { type: "removePerson", id: secondPersonId }); // わたし(color0), 3人目(color2)
+    expect(s.people.map((p) => ({ name: p.name, colorIndex: p.colorIndex }))).toEqual([
+      { name: "わたし", colorIndex: 0 },
+      { name: "3人目", colorIndex: 2 },
+    ]);
+
+    s = reducer(s, { type: "addPerson" });
+    // 「3人目」は既に使用中なので飛ばして「4人目」になる(名前の重複を避ける)
+    // colorIndexは未使用の1が優先される(色の重複を避ける)
+    expect(s.people).toHaveLength(3);
+    expect(s.people.map((p) => p.name)).toEqual(["わたし", "3人目", "4人目"]);
+    expect(s.people[2].colorIndex).toBe(1);
+    // 名前・色のどちらも他の誰とも重複しない
+    expect(new Set(s.people.map((p) => p.name)).size).toBe(3);
+    expect(new Set(s.people.map((p) => p.colorIndex)).size).toBe(3);
+  });
+
   test("renamePersonはtrimして反映する", () => {
     const s = reducer(onePerson, { type: "renamePerson", id: "p1", name: "  たろう  " });
     expect(s.people[0].name).toBe("たろう");
@@ -180,6 +232,29 @@ describe("addPerson/renamePerson/removePerson", () => {
     const s = reducer(onePerson, { type: "renamePerson", id: "p1", name: "   " });
     expect(s).toBe(onePerson);
     expect(s.people[0].name).toBe("わたし");
+  });
+
+  test("renamePersonはtrim後に他の誰かと完全一致する名前を拒否し状態を変更しない(Codexレビュー指摘I3)", () => {
+    const twoP: AppState = {
+      month: "2026-07",
+      people: [person({ id: "p1", name: "夫" }), person({ id: "p2", name: "妻", colorIndex: 1 })],
+      rows: [],
+      saveFailed: false,
+    };
+    const s = reducer(twoP, { type: "renamePerson", id: "p1", name: "  妻  " });
+    expect(s).toBe(twoP);
+    expect(s.people[0].name).toBe("夫");
+  });
+
+  test("renamePersonは自分自身への改名(実質無変更)は重複扱いせず許可する", () => {
+    const twoP: AppState = {
+      month: "2026-07",
+      people: [person({ id: "p1", name: "夫" }), person({ id: "p2", name: "妻", colorIndex: 1 })],
+      rows: [],
+      saveFailed: false,
+    };
+    const s = reducer(twoP, { type: "renamePerson", id: "p1", name: "夫" });
+    expect(s.people[0].name).toBe("夫");
   });
 
   test("removePersonは対象の人の行が1件でもあれば拒否する(設計ドキュメント§14.1)", () => {

@@ -7,7 +7,7 @@ import { SummaryPanel } from "./components/SummaryPanel";
 import { createOcrQueue, type OcrQueue, type QueueStatusEvent } from "./ocr/queue";
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
 import { reducer, toPersisted, fromPersisted, computeTotals, type AppState, type RowPatch } from "./state/reducer";
-import { saveState, loadState, currentMonth, clearState } from "./state/storage";
+import { saveState, loadState, currentMonth } from "./state/storage";
 import type { Row } from "./types";
 
 const yen = (n: number) => n.toLocaleString("ja-JP");
@@ -264,28 +264,37 @@ export default function App() {
 
   // 「新しい月を始める」(設計ドキュメント§4・§5.5)。確認ダイアログで現在の集計を
   // 提示してから、表示中サムネイルのObject URLを全解放し、再試行用File(retryFilesRef)・
-  // 重複検出用Set(seenFiles)をクリアし、localStorageを消去してからclearMonthをdispatch
-  // する(Task 9レポートで予告済みの統合ポイント)。onRemove/アンマウント時クリーンアップと
-  // 同様のURL解放パターンを流用する。
+  // 重複検出用Set(seenFiles)をクリアし、新しい(空の)月の状態へ切り替える(Task 9レポートで
+  // 予告済みの統合ポイント)。onRemove/アンマウント時クリーンアップと同様のURL解放パターンを
+  // 流用する。
   //
-  // 実行順序はCodexレビュー指摘を反映して当初案から調整した:
-  // 1) `clearState()`を最初に行い、失敗(例外)時はそこで中断する。先にサムネイルURLや
-  //    retryFilesRef/seenFilesを消してしまうと、永続化の削除に失敗した場合に「画面上には
-  //    旧月のデータが残っているのに再試行・重複検出の手段だけ失われる」中途半端な状態に
-  //    なる(Codexレビュー指摘)。
-  // 2) `queueRef.current?.cancelAll()`でpending中のOCRジョブを破棄する。これを呼ばないと
-  //    月次リセット後も旧月の画像がバックグラウンドでOCR処理され続け、新しい月に追加した
-  //    画像の処理がその後ろに並んでしまう(Codexレビュー指摘。行自体は既に無くなるため
-  //    結果が反映されて実害が出ることはないが、無駄な処理・待ち時間を発生させる)。
+  // 旧実装は`clearState()`(localStorage.removeItem)を先に呼び、成功後に
+  // dispatch({type:"clearMonth"})→自動保存effectのsaveState()という2段階で永続化していた。
+  // この間(削除成功〜次の保存完了)に容量超過・SecurityError等でsaveStateが失敗する、
+  // effect実行前にタブ終了・クラッシュする、dispatch後だが保存完了前にリロードする、
+  // といった事態が起きると、旧月のデータだけでなく月をまたいで維持するはずの`people`まで
+  // 失われる(Codexレビュー指摘I1)。
+  // 「削除してから保存」ではなく、新しい空状態を`reducer`であらかじめ計算し、同じ
+  // localStorageキーへ`saveState()`一発で原子的に上書きする。保存に失敗した場合は
+  // 何も変更せず(旧状態のlocalStorageがそのまま残る)アラートするだけで中断する。
   const onNewMonth = () => {
     const t = computeTotals(state.people, state.rows);
     const totalsText = t.totals.map((p) => `${p.name} ${yen(p.amountYen)}円`).join(" / ");
     const ok = window.confirm(`${state.month} のデータ(${totalsText})を消去して新しい月を始めますか?`);
     if (!ok) return;
-    if (!clearState()) {
-      window.alert("保存データを削除できませんでした。時間をおいて再試行してください。");
-      return;
+
+    const nextState = reducer(state, { type: "clearMonth", month: currentMonth() });
+    if (!saveState(toPersisted(nextState))) {
+      window.alert("新しい月の状態を保存できませんでした。時間をおいて再試行してください。");
+      return; // 保存失敗時は何もクリーンアップしない。旧状態のlocalStorage・画面表示ともに残る。
     }
+
+    // ここから先は永続化済みなので、pending中のOCRジョブ破棄・Object URL解放・
+    // 再試行/重複検出用ステートのクリアを行ってからdispatchする。
+    // `queue.cancelAll()`を呼ばないと、月次リセット後も旧月の画像がバックグラウンドで
+    // OCR処理され続け、新しい月に追加した画像の処理がその後ろに並んでしまう
+    // (Codexレビュー指摘。行自体は既に無くなるため結果が反映されて実害が出ることはないが、
+    // 無駄な処理・待ち時間を発生させる)。
     queueRef.current?.cancelAll();
     for (const r of state.rows) {
       if (r.thumbnailUrl) URL.revokeObjectURL(r.thumbnailUrl);
@@ -293,7 +302,7 @@ export default function App() {
     }
     retryFilesRef.current.clear();
     seenFiles.current.clear();
-    dispatch({ type: "clearMonth", month: currentMonth() });
+    dispatch({ type: "hydrate", state: nextState });
   };
 
   const hasPendingWork = state.rows.some((r) => r.processing);

@@ -1024,12 +1024,9 @@ describe("App", () => {
     }
   });
 
-  it("新しい月を始める: 保存データの削除(clearState)が失敗した場合は中断し、行も保存データもpendingキャンセルも変更せずアラート表示する(Codexレビュー指摘: 中途半端な状態の防止)", () => {
+  it("新しい月を始める: 新しい状態の保存(saveState)が失敗した場合は中断し、行も旧月のlocalStorageもpendingキャンセルも変更せずアラート表示する(Codexレビュー指摘I1: 削除してから保存する非原子的な旧実装は、削除成功〜保存完了の間に失敗するとpeopleごと失われる窓があった)", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
-    const removeItemSpy = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
-      throw new DOMException("denied", "SecurityError");
-    });
     try {
       const { container } = render(<App />);
       const fileInputs = container.querySelectorAll('input[type="file"]');
@@ -1039,16 +1036,27 @@ describe("App", () => {
         capturedCb!.onResult(id, { amountYen: 1000, status: "auto-high", candidates: [], processing: false });
       });
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+      // 新しい月へ切り替える前の、旧月のlocalStorage内容を保持しておく
+      const before = localStorage.getItem(STORAGE_KEY);
+      expect(before).not.toBeNull();
 
+      // 新しい空状態を同キーへ上書き保存する呼び出しだけを失敗させる
+      // (removeItemではなくsetItemを失敗させる。旧実装のclearState=removeItemはもう
+      // 呼ばれないため、原子的上書きの失敗経路を検証するにはsetItemを狙う必要がある)。
+      const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      });
       cancelAllMock.mockClear();
       fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
+      setItemSpy.mockRestore();
 
-      expect(alertSpy).toHaveBeenCalledWith("保存データを削除できませんでした。時間をおいて再試行してください。");
+      expect(alertSpy).toHaveBeenCalledWith("新しい月の状態を保存できませんでした。時間をおいて再試行してください。");
       // 中断されるため、行は残り、pendingキャンセルも呼ばれない(中途半端な後始末をしない)
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
       expect(cancelAllMock).not.toHaveBeenCalled();
+      // 削除してから保存、ではなく原子的上書きのため、失敗時は旧月のlocalStorageがそのまま残る
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(before);
     } finally {
-      removeItemSpy.mockRestore();
       alertSpy.mockRestore();
       confirmSpy.mockRestore();
     }
