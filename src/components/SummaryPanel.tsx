@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { buildSummaryText, computeTotals, formatDelta, type AppState } from "../state/reducer";
 import { personColorClass } from "../personColor";
+
+/** `.receipt-paper`側で本文末尾に予約する余白の基準にするCSSカスタムプロパティ名
+ *  (Codexレビュー v1.2再指摘I2)。 */
+const SUMMARY_PANEL_HEIGHT_VAR = "--summary-panel-height";
 
 type Props = { state: AppState; onNewMonth(): void };
 
@@ -18,6 +22,38 @@ export function SummaryPanel({ state, onNewMonth }: Props) {
   const [copied, setCopied] = useState(false);
   const t = computeTotals(state.people, state.rows);
   const direction = formatDelta(t.totals, t.delta);
+  const panelRef = useRef<HTMLElement>(null);
+
+  // サマリーは「1人1行」で人数・名前の長さに応じて可変高になる(設計ドキュメント§15.4)。
+  // 一方`.receipt-paper`側の本文末尾の予約領域は固定230pxだったため、5～8人や長い
+  // 名前ではパネルが230pxを超え、最終行・手動追加フォームが隠れてスクロールしても
+  // 表示できなくなっていた(Codexレビュー v1.2再指摘I2、§15.6「最終行を隠さない」への
+  // 退行)。ResizeObserverで実高を継続的に計測し、`document.documentElement`上の
+  // CSSカスタムプロパティへ反映することで、`.receipt-paper`側がその実測値を
+  // `padding-bottom`に使えるようにする。
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    // jsdom(Vitestのテスト環境)はResizeObserver未実装のため、存在しない場合は
+    // 何もしない(CSS側のフォールバック値230pxがそのまま使われる)。
+    if (typeof ResizeObserver === "undefined") return;
+
+    const update = () => {
+      document.documentElement.style.setProperty(
+        SUMMARY_PANEL_HEIGHT_VAR,
+        `${Math.ceil(panel.getBoundingClientRect().height)}px`,
+      );
+    };
+
+    const observer = new ResizeObserver(update);
+    observer.observe(panel);
+    update();
+
+    return () => {
+      observer.disconnect();
+      document.documentElement.style.removeProperty(SUMMARY_PANEL_HEIGHT_VAR);
+    };
+  }, []);
 
   const copy = async () => {
     if (t.unconfirmed > 0 && !window.confirm(`未確認が ${t.unconfirmed}件 あります。このままコピーしますか?`)) return;
@@ -31,7 +67,7 @@ export function SummaryPanel({ state, onNewMonth }: Props) {
   };
 
   return (
-    <section className="summary-panel" aria-label="集計">
+    <section ref={panelRef} className="summary-panel" aria-label="集計">
       {/* レシートの合計欄の様式(設計ドキュメント§15.4): 上に二重線(border-top:double、
           CSSのみ)、「合 計」の印字風ラベル(装飾のみ・aria-hidden)。 */}
       <p className="summary-heading" aria-hidden="true">合 計</p>

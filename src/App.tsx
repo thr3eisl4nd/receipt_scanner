@@ -56,6 +56,12 @@ export default function App() {
   const queueRef = useRef<OcrQueue | null>(null);
   // 失敗行の再試行(I8)用に、追加時のFileをid別に保持する。行削除時にクリアする。
   const retryFilesRef = useRef(new Map<string, File>());
+  // 印字アニメーションのstagger遅延(ms)をid別に保持する(Codexレビュー v1.2再指摘I5)。
+  // 「追加バッチ内のindex」から算出し、ReceiptRowへそのままpropとして渡す。一覧全体の
+  // 通し番号から逆算する旧実装は、既存行が10件以上ある状態で1件だけ追加しても
+  // 540ms待たされ、複数件同時追加時は全新規行が上限の540msに丸められてstaggerが
+  // 消えるバグがあった。行削除・月次リセット時にエントリを解放する。
+  const printDelayByIdRef = useRef(new Map<string, number>());
   // 行(row)とOCR「試行(job)」を分離して追跡する(Codexレビュー再指摘C1)。
   // queue.enqueue()に渡すidを行idそのものにしていると、「OCR-A実行中→ユーザーが
   // 空欄確定(processing:false)→再試行でprocessing:trueに戻しOCR-Bをenqueue→
@@ -198,6 +204,10 @@ export default function App() {
       }
       seenFiles.current.add(key);
       const id = crypto.randomUUID();
+      // 印字アニメーションのstagger(設計ドキュメント§15.5)は「このバッチ内で今まで
+      // 追加した行数」を基準にする(Codexレビュー v1.2再指摘I5)。極端に長いバッチで
+      // 遅延が積み上がらないよう最大10件分(600ms)でキャップする。
+      printDelayByIdRef.current.set(id, Math.min(rows.length, 9) * 60);
       rows.push({
         id,
         payerId,
@@ -221,6 +231,7 @@ export default function App() {
     if (row?.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl);
     if (row?.previewUrl) URL.revokeObjectURL(row.previewUrl);
     retryFilesRef.current.delete(id);
+    printDelayByIdRef.current.delete(id);
     invalidateJobForRow(id);
     dispatch({ type: "removeRow", id });
   };
@@ -301,6 +312,7 @@ export default function App() {
       if (r.previewUrl) URL.revokeObjectURL(r.previewUrl);
     }
     retryFilesRef.current.clear();
+    printDelayByIdRef.current.clear();
     seenFiles.current.clear();
     dispatch({ type: "hydrate", state: nextState });
   };
@@ -322,77 +334,73 @@ export default function App() {
           : "";
 
   return (
-    // 集計パネル(.summary-panel、画面下部固定)は<main>の外(このコンポーネントの
-    // 最上位、bodyの直下側)に置く。ジグザグのミシン目エッジ(clip-path)を持つ
-    // `.receipt-paper`はおろか<main>自体の子ですらなくすることで、将来<main>や
-    // その先祖に何らかのスタイル(transform/filter/perspective/contain/
-    // backdrop-filter等、position:fixedの基準を変えうるプロパティ)が加わっても
-    // 集計パネルの固定位置決めが一切影響を受けない構造にする(本番デプロイでの
-    // レイアウト崩れ報告を受けての事後対応。実機相当のChromeで
-    // `getComputedStyle()`により`.summary-panel`の祖先すべてに該当プロパティが
-    // 無いこと・`position:fixed`が正しく計算されていることは確認済みで、
-    // 今回の変更前から論理的には問題なかったが、念のためさらに一段階
-    // 位置を独立させる)。
-    <>
-      <main>
-        {/* 「紙」本体(設計ドキュメント§15.2)。 */}
-        <div className="receipt-paper">
-          {/* レシートの店名ヘッダー様式(設計ドキュメント§15.3): モノスペース・中央寄せ・
-              字間広め、上下に「＊ ＊ ＊」の装飾行(装飾のみ・aria-hidden)。 */}
-          <header className="receipt-header">
-            <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
-            <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
-            <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
-          </header>
-          <PeopleManager
-            people={state.people}
-            rows={state.rows}
-            onAdd={() => dispatch({ type: "addPerson" })}
-            onRename={(id, name) => dispatch({ type: "renamePerson", id, name })}
-            onRemove={(id) => dispatch({ type: "removePerson", id })}
-          />
-          <AddReceiptButtons people={state.people} onFiles={onFiles} />
+    // 集計パネル(.summary-panel、画面下部固定)は<main>の中・`.receipt-paper`の外に置く
+    // (Codexレビュー v1.2再指摘I4)。以前のリビジョンでは集計パネルを<main>の外(body直下側)
+    // まで出していたが、これだと主要機能である集計・月切替がスクリーンリーダーの
+    // 「mainへ移動」ランドマークから外れ、主要コンテンツのランドマークが分断されてしまう。
+    // 固定位置決めを安全にするために必要なのは、ジグザグのミシン目エッジ(clip-path)を持つ
+    // `.receipt-paper`の外へ出すことだけであり、<main>自体には固定包含ブロックを変える
+    // スタイル(transform/filter/perspective/contain/backdrop-filter等)は無いため、
+    // <main>の子であること自体は`position:fixed`の基準に影響しない。
+    <main>
+      {/* 「紙」本体(設計ドキュメント§15.2)。 */}
+      <div className="receipt-paper">
+        {/* レシートの店名ヘッダー様式(設計ドキュメント§15.3): モノスペース・中央寄せ・
+            字間広め、上下に「＊ ＊ ＊」の装飾行(装飾のみ・aria-hidden)。 */}
+        <header className="receipt-header">
+          <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
+          <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
+          <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
+        </header>
+        <PeopleManager
+          people={state.people}
+          rows={state.rows}
+          onAdd={() => dispatch({ type: "addPerson" })}
+          onRename={(id, name) => dispatch({ type: "renamePerson", id, name })}
+          onRemove={(id) => dispatch({ type: "removePerson", id })}
+        />
+        <AddReceiptButtons people={state.people} onFiles={onFiles} />
 
-          {/* 切り取り線装飾(設計ドキュメント§15.4、装飾のみ・aria-hidden)。 */}
-          <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
+        {/* 切り取り線装飾(設計ドキュメント§15.4、装飾のみ・aria-hidden)。 */}
+        <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
 
-          {ocrEvent?.kind === "model-error" ? (
-            <div role="alert" className="error ocr-model-error">
-              <p>{ocrEvent.message}</p>
-              <button type="button" onClick={onRetryModelError}>再試行</button>
-            </div>
-          ) : (
-            <p role="status" aria-live="polite" aria-atomic="true" className="ocr-status">
-              {ocrStatusText}
-            </p>
-          )}
-          {hasPendingWork && (
-            <button type="button" className="cancel-all" onClick={onCancelAll}>すべてキャンセル</button>
-          )}
+        {ocrEvent?.kind === "model-error" ? (
+          <div role="alert" className="error ocr-model-error">
+            <p>{ocrEvent.message}</p>
+            <button type="button" onClick={onRetryModelError}>再試行</button>
+          </div>
+        ) : (
+          <p role="status" aria-live="polite" aria-atomic="true" className="ocr-status">
+            {ocrStatusText}
+          </p>
+        )}
+        {hasPendingWork && (
+          <button type="button" className="cancel-all" onClick={onCancelAll}>すべてキャンセル</button>
+        )}
 
-          {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
-          <ul className="receipt-list">
-            {state.rows.map((row, index) => (
-              <ReceiptRow
-                key={row.id}
-                row={row}
-                people={state.people}
-                rowNumber={index + 1}
-                canRetry={retryFilesRef.current.has(row.id)}
-                onPatch={(id, patch) => {
-                  releaseRetryFileIfResolved(id, patch);
-                  dispatch({ type: "updateRow", id, patch });
-                }}
-                onRemove={onRemove}
-                onRetry={onRetry}
-              />
-            ))}
-          </ul>
-          <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
-          <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
-        </div>
-      </main>
+        {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
+        <ul className="receipt-list">
+          {state.rows.map((row, index) => (
+            <ReceiptRow
+              key={row.id}
+              row={row}
+              people={state.people}
+              rowNumber={index + 1}
+              printDelayMs={printDelayByIdRef.current.get(row.id) ?? 0}
+              canRetry={retryFilesRef.current.has(row.id)}
+              onPatch={(id, patch) => {
+                releaseRetryFileIfResolved(id, patch);
+                dispatch({ type: "updateRow", id, patch });
+              }}
+              onRemove={onRemove}
+              onRetry={onRetry}
+            />
+          ))}
+        </ul>
+        <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
+        <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
+      </div>
       <SummaryPanel state={state} onNewMonth={onNewMonth} />
-    </>
+    </main>
   );
 }

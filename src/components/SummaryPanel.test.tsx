@@ -198,4 +198,45 @@ describe("SummaryPanel", () => {
 
     expect(alertSpy).toHaveBeenCalledWith("コピーできませんでした");
   });
+
+  it("マウント時にResizeObserverで実高さを--summary-panel-heightへ反映し、アンマウントで解除する(Codexレビュー v1.2再指摘I2)", () => {
+    // サマリーは「1人1行」で可変高になったため、`.receipt-paper`側の固定230px予約では
+    // 人数・名前の長さによって最終コンテンツが隠れる退行があった。ResizeObserverで
+    // 実測した高さがCSSカスタムプロパティへ反映されることを検証する
+    // (jsdomは実レイアウトを行わないため、`getBoundingClientRect`をスタブして
+    // 「観測された高さがそのままpxで反映される」という配線自体を確認する)。
+    class FakeResizeObserver {
+      constructor(_callback: ResizeObserverCallback) {}
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    const originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: 274.4,
+      width: 640,
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      x: 0,
+      y: 0,
+      toJSON() {},
+    } as DOMRect);
+
+    try {
+      const state: AppState = { month: "2026-07", people: twoPeople, saveFailed: false, rows: [row({ id: "a" })] };
+      const { unmount } = render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
+
+      // Math.ceil(274.4) = 275
+      expect(document.documentElement.style.getPropertyValue("--summary-panel-height")).toBe("275px");
+
+      unmount();
+      expect(document.documentElement.style.getPropertyValue("--summary-panel-height")).toBe("");
+    } finally {
+      rectSpy.mockRestore();
+      globalThis.ResizeObserver = originalResizeObserver;
+    }
+  });
 });

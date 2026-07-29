@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type PointerEvent } from "react";
+import { createPortal } from "react-dom";
 import type { FailureKind, Person, Row } from "../types";
 import type { RowPatch } from "../state/reducer";
 import { parseYenInput, toggleYenSign, isNegativeYenInput } from "../moneyInput";
@@ -50,6 +51,12 @@ type Props = {
   /** 一覧内での表示順(1始まり)。同名の手動行が複数あってもaria-labelを一意にするために使う
    *  (Codexレビュー最終ゲート指摘Minor#2)。 */
   rowNumber: number;
+  /** 「印字」アニメーションのstagger遅延(ms)。App側が「追加バッチ内のindex」から算出して
+   *  渡す(Codexレビュー v1.2再指摘I5)。以前はここで`rowNumber`(=一覧全体の通し番号)から
+   *  逆算していたため、既存行が10件以上ある状態で1件だけ追加しても540ms待たされ、
+   *  複数件同時追加時は全新規行が上限の540msに丸められてstaggerが消えていた。
+   *  永続化済み行・手動追加行は常に0。 */
+  printDelayMs: number;
   /** Appが当該行のFileをまだ保持しているか(再試行ボタンの表示可否、Codexレビュー指摘I8)。 */
   canRetry: boolean;
   onPatch(id: string, patch: RowPatch): void;
@@ -57,7 +64,7 @@ type Props = {
   onRetry(id: string): void;
 };
 
-export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove, onRetry }: Props) {
+export function ReceiptRow({ row, people, rowNumber, printDelayMs, canRetry, onPatch, onRemove, onRetry }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -179,9 +186,9 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
   // 行追加時の「印字」アニメーション(設計ドキュメント§15.5)は複数行同時追加時に
   // 60msずつずらす(stagger)。CSS`animation`は要素マウント時に一度だけ走るため
   // (keyはrow.idなので既存行が再マウントされることはない)、後から並び順が変わっても
-  // 既に再生済みのアニメーションが再生され直すことはない。極端に長いリストで遅延が
-  // 積み上がらないよう、最大10行分(600ms)でキャップする。
-  const printDelayMs = Math.min(rowNumber - 1, 9) * 60;
+  // 既に再生済みのアニメーションが再生され直すことはない。遅延自体は`printDelayMs`
+  // propとしてApp側から渡される(Codexレビュー再指摘I5: 一覧全体の通し番号ではなく
+  // 「追加バッチ内のindex」から算出する)。
 
   return (
     <li
@@ -197,7 +204,7 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
           aria-expanded={zoomed}
           onClick={() => setZoomed((v) => !v)}
         >
-          <img src={row.thumbnailUrl} alt="" className="thumb" width={48} height={48} />
+          <img src={row.thumbnailUrl} alt="" className="thumb" width={48} height={48} loading="lazy" />
         </button>
       )}
       <div className="row-main">
@@ -214,7 +221,13 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
             アンバー系/手入力・確認済=ニュートラル。処理中はどの状態色とも混同しない
             専用の`badge-processing`+軽量スピナーにする(row.statusがまだ"failed"の
             ままでもアンバー表示にならないようにする)。 */}
-        <span className={`badge ${row.processing ? "badge-processing" : `badge-${row.status}`}`}>
+        <span
+          className={`badge ${row.processing ? "badge-processing" : `badge-${row.status}`}`}
+          // 視覚表示は`[自動]`へ短縮しても、読み上げは従来の「自動読取」を維持する
+          // (Codexレビュー最終ゲート指摘Minor#4: 短縮によりアクセシブルネームまで
+          // 弱化していた)。処理中は別テキスト("処理中…")を表示するため対象外。
+          aria-label={!row.processing && row.status === "auto-high" ? "自動読取" : undefined}
+        >
           {/* 点滅する印字カーソル「▮」(設計ドキュメント§15.5)。文字自体はCSSの
               `::before`生成コンテンツで描画するため、この要素のtextContentは常に空のまま
               (バッジのテキスト「処理中…」の完全一致テスト・aria-live領域の完全一致テストに
@@ -228,6 +241,8 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
               ref={inputRef}
               type="text"
               inputMode="numeric"
+              name="receipt-amount"
+              autoComplete="off"
               value={draft}
               autoFocus
               onChange={(e) => setDraft(e.target.value)}
@@ -331,41 +346,49 @@ export function ReceiptRow({ row, people, rowNumber, canRetry, onPatch, onRemove
           削除
         </button>
       </div>
-      {zoomed && (row.previewUrl ?? row.thumbnailUrl) && (
-        <div
-          className="thumb-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`${row.label}の拡大画像`}
-          onClick={() => setZoomed(false)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setZoomed(false);
-            // ダイアログ内の唯一のフォーカス可能要素(閉じるボタン)以外に背景へフォーカスが
-            // 抜けないよう、Tab/Shift+Tabはここで無効化する(Codexレビュー再指摘Important:
-            // aria-modal="true"を宣言していてもTabで背景の他行の操作へ移動できてしまい、
-            // モーダルとして機能していなかった)。
-            else if (e.key === "Tab") e.preventDefault();
-          }}
-        >
-          {/* 拡大時は320pxサムネイルではなく1280px相当のpreviewUrlを優先表示する
-              (Codexレビュー最終ゲート指摘I2)。<img>は拡大(zoomed)時のみ描画され、
-              閉じている間はデコード済み画像を保持しない。previewUrl生成が
-              best-effortで失敗している場合はthumbnailUrlへフォールバックする。 */}
-          <img src={row.previewUrl ?? row.thumbnailUrl} alt="" className="thumb-overlay-img" />
-          <button
-            type="button"
-            ref={zoomCloseButtonRef}
-            className="thumb-overlay-close"
-            aria-label="拡大画像を閉じる"
-            onClick={(e) => {
-              e.stopPropagation();
-              setZoomed(false);
+      {zoomed &&
+        (row.previewUrl ?? row.thumbnailUrl) &&
+        createPortal(
+          // `document.body`直下へPortal化する(Codexレビュー v1.2指摘I1)。`.thumb-overlay`は
+          // `position: fixed; inset: 0`だが、`clip-path`を持つ`.receipt-paper`の子孫のままだと
+          // 固定要素であっても祖先のクリッピング領域の外へは描画されない(WebKit bug 152548等)。
+          // 640px幅の紙の外側やジグザグ部分で切れ、`clip-path`が作るスタッキングコンテキスト内に
+          // 留まるため後続の`.summary-panel`より下に描画される懸念もあった。
+          <div
+            className="thumb-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${row.label}の拡大画像`}
+            onClick={() => setZoomed(false)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setZoomed(false);
+              // ダイアログ内の唯一のフォーカス可能要素(閉じるボタン)以外に背景へフォーカスが
+              // 抜けないよう、Tab/Shift+Tabはここで無効化する(Codexレビュー再指摘Important:
+              // aria-modal="true"を宣言していてもTabで背景の他行の操作へ移動できてしまい、
+              // モーダルとして機能していなかった)。
+              else if (e.key === "Tab") e.preventDefault();
             }}
           >
-            閉じる
-          </button>
-        </div>
-      )}
+            {/* 拡大時は320pxサムネイルではなく1280px相当のpreviewUrlを優先表示する
+                (Codexレビュー最終ゲート指摘I2)。<img>は拡大(zoomed)時のみ描画され、
+                閉じている間はデコード済み画像を保持しない。previewUrl生成が
+                best-effortで失敗している場合はthumbnailUrlへフォールバックする。 */}
+            <img src={row.previewUrl ?? row.thumbnailUrl} alt="" className="thumb-overlay-img" />
+            <button
+              type="button"
+              ref={zoomCloseButtonRef}
+              className="thumb-overlay-close"
+              aria-label="拡大画像を閉じる"
+              onClick={(e) => {
+                e.stopPropagation();
+                setZoomed(false);
+              }}
+            >
+              閉じる
+            </button>
+          </div>,
+          document.body,
+        )}
     </li>
   );
 }

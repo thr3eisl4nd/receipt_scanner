@@ -51,10 +51,24 @@
   --marker-6-rgb: 255, 111, 165; /* 蛍光ピンク */
   --marker-7-rgb: 140, 155, 255; /* 蛍光ペリウィンクル */
 
-  /* 紙のごく薄いテクスチャ(外部リソース禁止のためインラインSVG data URI、約470バイト)。
-     feTurbulenceのノイズをアルファ0.05相当に抑えたfeColorMatrixで極薄く着色するのみで、
-     本文コントラストへの影響は無視できる(背景の明度をほぼ変えない)。 */
-  --paper-texture: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%22.85%22%20numOctaves%3D%222%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20values%3D%220%200%200%200%20.15%200%200%200%200%20.14%200%200%200%200%20.12%200%200%200%20.05%200%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22100%25%22%20height%3D%22100%25%22%20filter%3D%22url(%23n)%22%2F%3E%3C%2Fsvg%3E");
+  /* 紙のごく薄いテクスチャ(Codexレビュー v1.2指摘I3で置換)。旧実装はインラインSVGの
+     feTurbulence+feColorMatrix(定数RGB)だったが、feColorMatrixの係数がすべて定数
+     だったためfeTurbulenceのノイズ値が一切出力に残らず、実質「一様な5%濃色
+     オーバーレイ」でしかなく§15.2の紙質表現を満たしていなかった。加えてdata URI内
+     SVG filterはSafariで未解決の互換性問題がある(WebKit bug 104169)。静的な
+     radial-gradientの小タイルを敷き詰める方式に置き換え、Mobile SafariのSVG
+     フィルタ問題とfeTurbulenceの描画コストを両方避ける。 */
+  --paper-texture:
+    radial-gradient(
+      circle at 20% 30%,
+      rgb(38 36 31 / 2.5%) 0 0.5px,
+      transparent 0.7px
+    ),
+    radial-gradient(
+      circle at 70% 65%,
+      rgb(38 36 31 / 1.8%) 0 0.4px,
+      transparent 0.65px
+    );
 
   color: var(--ink);
   background: var(--counter);
@@ -110,6 +124,7 @@ main {
   position: relative;
   background-color: var(--paper);
   background-image: var(--paper-texture);
+  background-size: 7px 9px, 11px 13px;
   clip-path: polygon(
     0% 8px, 4.167% 0px, 8.333% 8px, 12.5% 0px, 16.667% 8px, 20.833% 0px, 25% 8px, 29.167% 0px,
     33.333% 8px, 37.5% 0px, 41.667% 8px, 45.833% 0px, 50% 8px, 54.167% 0px, 58.333% 8px, 62.5% 0px,
@@ -122,7 +137,15 @@ main {
     16.667% calc(100% - 8px), 12.5% 100%, 8.333% calc(100% - 8px), 4.167% 100%,
     0% calc(100% - 8px)
   );
-  padding: 22px 16px calc(230px + env(safe-area-inset-bottom));
+  /* 画面下部固定の`.summary-panel`が本文最終行・手動追加フォームを隠さないよう、
+     その実高を予約する(Codexレビュー v1.2再指摘I2)。サマリーは「1人1行」で人数・
+     名前の長さに応じて可変高になるため、固定230pxの予約では5～8人や長い名前で
+     パネルが230pxを超え、最終コンテンツが隠れてスクロールしても表示できなくなる
+     退行があった。`--summary-panel-height`はSummaryPanel側のResizeObserverが
+     実測値(safe-area-inset-bottomを含むボーダーボックス高)を反映するCSS変数。
+     JS実行前・ResizeObserver未対応環境向けのフォールバックのみ、旧来の230px相当
+     (safe-area分を含む)を使う。 */
+  padding: 22px 16px calc(var(--summary-panel-height, calc(230px + env(safe-area-inset-bottom))) + 16px);
 }
 
 /* レシートの店名ヘッダー様式(設計ドキュメント§15.3): モノスペース・中央寄せ・
@@ -295,7 +318,8 @@ main {
   align-items: center;
   gap: 6px;
   font-size: 14px;
-  font-weight: 700;
+  /* 見出しは800(設計ドキュメント§15.3、Codexレビュー v1.2再指摘Minor#2: 700のままだった)。 */
+  font-weight: 800;
   margin: 0 0 8px;
   background: var(--person-marker, transparent);
   color: var(--ink);
@@ -324,6 +348,12 @@ main {
   border-bottom: var(--rule-dashed);
   padding: 12px 2px;
   animation: receipt-print-in 200ms ease-out both;
+  /* 30枚超の月でもスクロール性能を落とさない(web-design-guidelines監査、§15.7)。
+     画面外の行はレイアウト・描画をスキップし、intrinsic-sizeで概算の高さ(2行程度の
+     実測値)を確保してレイアウトシフトを防ぐ。`.thumb-overlay`はcreatePortalで
+     document.body直下へ描画されるため、この行のcontainmentの影響を受けない。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
 }
 .receipt-row:last-child { border-bottom: none; }
 
@@ -339,7 +369,9 @@ main {
 }
 .thumb { display: block; width: 48px; height: 48px; object-fit: cover; }
 .thumb-overlay {
-  position: fixed; inset: 0; z-index: 100; background: rgba(38, 36, 31, 0.92);
+  /* document.body直下へcreatePortalで描画される(Codexレビュー v1.2指摘I1)。z-indexは
+     .summary-panel等アプリ内の他要素より確実に上に出る値にする。 */
+  position: fixed; inset: 0; z-index: 1000; background: rgba(38, 36, 31, 0.92);
   display: flex; align-items: center; justify-content: center; padding: 16px;
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
@@ -461,7 +493,9 @@ main {
   min-height: 44px; padding: 8px 14px; margin: 4px 0 14px;
   border-radius: var(--radius-print); border: 1.5px solid var(--stamp); background: var(--paper); color: var(--ink); font-weight: 700;
 }
-.ocr-status { color: var(--ink-faded); font-size: 14px; }
+/* 進捗カウント(「画像 N/M 処理中…」等)もモノスペース+桁揃え(設計ドキュメント§15.3、
+   Codexレビュー v1.2再指摘Minor#2: 対象セレクタから漏れていた)。 */
+.ocr-status { color: var(--ink-faded); font-size: 14px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .ocr-model-error {
   border: 1.5px solid var(--stamp); border-radius: var(--radius-print);
   padding: 10px 12px; margin-bottom: 14px; background: var(--paper);
@@ -503,6 +537,7 @@ main {
   position: fixed; bottom: 0; left: 0; right: 0;
   background-color: var(--paper);
   background-image: var(--paper-texture);
+  background-size: 7px 9px, 11px 13px;
   border-top: 6px double var(--ink);
   box-shadow: var(--shadow-panel);
   padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
@@ -543,12 +578,13 @@ main {
   min-height: 44px; padding: 8px 12px; flex: 1; border-radius: var(--radius-print); font-weight: 700;
 }
 /* 主要CTA(結果をコピー)はインク黒のベタ塗り+白文字。「新しい月を始める」は
-   印刷物らしい枠線ボタンにする(§15.4)。 */
+   全行削除を伴う破壊的操作のため、朱肉・レジの赤系(枠線+文字色)にする
+   (Codexレビュー v1.2再指摘Minor#3: 通常のink枠のままで他の操作と区別が付かなかった)。 */
 .summary-panel .panel-actions button:first-child {
   border: 1.5px solid var(--ink); background: var(--ink); color: var(--paper);
 }
 .summary-panel .panel-actions button:last-child {
-  border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+  border: 1.5px solid var(--stamp); background: var(--paper); color: var(--stamp-text);
 }
 
 /* ソフトキーボード出現時に入力欄が隠れないための余白(Codexレビュー指摘I5)。 */
@@ -565,8 +601,9 @@ main {
  * このアプリで必須の復旧経路(§9)なので、金額編集・手動追加フォームのいずれかの
  * input/selectがフォーカスされている間は固定を解除し、通常のドキュメントフローに
  * 戻す(Codexレビュー最終ゲート指摘I3)。`:has()`未対応ブラウザでは何もしない。
- * v1.2でレイアウトの主要コンテナが`main`から`.receipt-paper`へ移った(ジグザグの
- * 紙エッジをsummary-panel以外の範囲に限定するため)ため、解除対象もそれに追従する。
+ * `.summary-panel`・`.receipt-paper`はいずれも`<main>`の直接の子(Codexレビュー
+ * v1.2再指摘I4: ランドマーク分断防止のため`.summary-panel`は`<main>`の中に置く)
+ * なので、以下のセレクタは構造変更の影響を受けない。
  */
 @supports selector(body:has(input:focus)) {
   body:has(
@@ -588,6 +625,58 @@ main {
     /* 固定パネル解除中は、パネル分の予約(230px)ではなく通常の余白でよい */
     padding-bottom: 22px;
   }
+}
+
+/* ---------------------------------------------------------------------
+   hover/active状態(web-design-guidelines監査、§15.7: interactive states increase
+   contrast)。枠線+紙色背景の標準ボタンは背景をわずかに濃く(hover)・さらに濃く
+   (active、押し込まれた印象にわずかに沈める)する。`aria-pressed="true"`の符号切替
+   ボタンやdisabledボタンは背景そのものが状態を表しているため対象外にする
+   (上書きするとコントラストが崩れる)。文字色は常に`--ink`/`--stamp-text`のまま
+   なので、背景をわずかに濃くしてもコントラストは維持(むしろ僅かに向上)される。
+   --------------------------------------------------------------------- */
+button:not(:disabled):not([aria-pressed="true"]):hover,
+[role="button"]:not(:disabled):not([aria-pressed="true"]):hover {
+  background: color-mix(in srgb, var(--ink) 8%, var(--paper));
+}
+button:not(:disabled):not([aria-pressed="true"]):active,
+[role="button"]:not(:disabled):not([aria-pressed="true"]):active {
+  background: color-mix(in srgb, var(--ink) 14%, var(--paper));
+  transform: translateY(1px);
+}
+.payer-group button:active {
+  background: color-mix(in srgb, var(--ink) 12%, var(--paper));
+  transform: translateY(1px);
+}
+
+/* ベタ塗りCTA(インク黒背景+紙色文字)は逆方向: 地の色を僅かに明るくする。 */
+.manual-entry > button[type="submit"]:not(:disabled):hover,
+.summary-panel .panel-actions button:first-child:not(:disabled):hover {
+  background: color-mix(in srgb, var(--paper) 15%, var(--ink));
+}
+.manual-entry > button[type="submit"]:not(:disabled):active,
+.summary-panel .panel-actions button:first-child:not(:disabled):active {
+  background: color-mix(in srgb, var(--paper) 25%, var(--ink));
+  transform: translateY(1px);
+}
+
+/* 「新しい月を始める」(朱色系の破壊的操作ボタン)は朱色を基準に濃淡だけ変える。 */
+.summary-panel .panel-actions button:last-child:not(:disabled):hover {
+  background: color-mix(in srgb, var(--stamp) 10%, var(--paper));
+}
+.summary-panel .panel-actions button:last-child:not(:disabled):active {
+  background: color-mix(in srgb, var(--stamp) 18%, var(--paper));
+  transform: translateY(1px);
+}
+
+/* 符号切替の押下状態(朱色塗り+白文字)はhover/activeでも朱色系のまま濃淡だけ変える
+   (上のaria-pressed除外ルールにより一般ルールは当たらないため、ここで個別に定義する)。 */
+.sign-toggle[aria-pressed="true"]:hover {
+  background: color-mix(in srgb, var(--ink) 10%, var(--stamp));
+}
+.sign-toggle[aria-pressed="true"]:active {
+  background: color-mix(in srgb, var(--ink) 20%, var(--stamp));
+  transform: translateY(1px);
 }
 
 /* フォーカスリング(アクセシビリティ: 全インタラクティブ要素で視認できること)。

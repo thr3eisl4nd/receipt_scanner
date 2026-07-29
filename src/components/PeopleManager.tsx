@@ -103,6 +103,8 @@ function PersonNameEditor({ name, existingNames, onRename }: NameEditorProps) {
       <input
         ref={inputRef}
         type="text"
+        name="person-name"
+        autoComplete="off"
         value={draft}
         autoFocus
         aria-label="人の名前"

@@ -491,6 +491,11 @@ describe("App", () => {
     expect(thumbButton.getAttribute("aria-expanded")).toBe("true");
     const overlay = screen.getByRole("dialog", { name: "レシート 1の拡大画像" });
     expect(overlay.getAttribute("aria-modal")).toBe("true");
+    // createPortalでdocument.body直下へ描画される(Codexレビュー v1.2指摘I1)。
+    // `clip-path`を持つ`.receipt-paper`の子孫のままだと、固定要素であっても祖先の
+    // クリッピング領域の外へは描画されない(WebKit bug 152548)ため、祖先に
+    // `.receipt-paper`が無いことを直接検証する。
+    expect(overlay.closest(".receipt-paper")).toBeNull();
     // 開いた直後は閉じるボタンへフォーカスが移る(Codexレビュー再指摘I5)
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "拡大画像を閉じる" }));
     // 拡大中も行の他の操作(削除・金額)は変わらず操作できる(旧実装は行内width:100%で
@@ -1060,5 +1065,43 @@ describe("App", () => {
       alertSpy.mockRestore();
       confirmSpy.mockRestore();
     }
+  });
+
+  it("集計パネル(.summary-panel)は<main>の中にある(Codexレビュー v1.2再指摘I4: 集計・月切替を<main>の外へ出すと主要コンテンツのランドマークが分断されるため、main内・.receipt-paperの外へ戻した)", () => {
+    render(<App />);
+    expect(screen.getByLabelText("集計").closest("main")).not.toBeNull();
+  });
+
+  it("印字アニメーションのstaggerは一覧全体の行番号ではなく追加バッチ内のindexを基準にする(Codexレビュー v1.2再指摘I5)", () => {
+    // 旧実装は`rowNumber`(一覧全体の通し番号)から逆算していたため、既存行が
+    // 10件以上ある状態で1件だけ追加しても`Math.min(11, 9) * 60 = 540ms`待たされていた。
+    // 新実装は「このバッチ内のindex」を基準にするため、単独追加は常に0msになる。
+    const { container } = render(<App />);
+    const albumInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+
+    for (let i = 0; i < 11; i++) {
+      selectFile(albumInput, new File([`f${i}`], `f${i}.png`));
+    }
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(11);
+
+    selectFile(albumInput, new File(["solo"], "solo.png"));
+    const rows = container.querySelectorAll(".receipt-row");
+    expect(rows).toHaveLength(12);
+    expect((rows[11] as HTMLElement).style.animationDelay).toBe("0ms");
+  });
+
+  it("複数ファイルを同時追加した場合はバッチ内indexで60msずつずらす(0ms/60ms/120ms、Codexレビュー v1.2再指摘I5)", () => {
+    const { container } = render(<App />);
+    const albumInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+
+    fireEvent.change(albumInput, {
+      target: { files: [new File(["a"], "a.png"), new File(["b"], "b.png"), new File(["c"], "c.png")] },
+    });
+
+    const rows = container.querySelectorAll(".receipt-row");
+    expect(rows).toHaveLength(3);
+    expect((rows[0] as HTMLElement).style.animationDelay).toBe("0ms");
+    expect((rows[1] as HTMLElement).style.animationDelay).toBe("60ms");
+    expect((rows[2] as HTMLElement).style.animationDelay).toBe("120ms");
   });
 });

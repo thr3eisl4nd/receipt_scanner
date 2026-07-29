@@ -78,6 +78,8 @@ export function ManualEntryForm({ people, onAdd }: Props) {
           setLabel(e.target.value);
           setError(null);
         }}
+        name="expense-label"
+        autoComplete="off"
         placeholder="名前(例: 家賃)"
         aria-label="支出の名前"
         aria-invalid={error?.field === "label"}
@@ -92,6 +94,8 @@ export function ManualEntryForm({ people, onAdd }: Props) {
           }}
           type="text"
           inputMode="numeric"
+          name="expense-amount"
+          autoComplete="off"
           placeholder="金額(円)"
           aria-label="追加する金額(円)"
           aria-invalid={error?.field === "amount"}
