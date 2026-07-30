@@ -37,9 +37,15 @@ const initialState = (): AppState => {
  *   §16.5「写真全体を1枚として読み直す」)。
  * - `crop`指定: 特定の1領域だけを元解像度から再クロップする(分割された1行の再試行)。
  * - `forceSingle`指定: 検出をスキップし、写真全体を1領域として強制的に読み直す
- *   (§16.5の回復導線専用。誤って2分割された場合の回復)。
+ *   (§16.5の回復導線専用。誤って2分割された場合の回復)。一度forceSingleで読み直した
+ *   行は、その後の通常の「再試行」でもforceSingleを維持する(Codexレビュー最終ゲート
+ *   指摘I5: 維持しないと、写真全体読み直しの失敗後に「再試行」を押すと通常の検出
+ *   経路へ戻ってしまい、再び誤分割されうる)。
+ * - `forceNonAutoHigh`指定: `crop`指定の再試行元が、元々`ambiguous`(§16.3安全弁)
+ *   だった領域である場合にtrueを保持する(Codexレビュー最終ゲート指摘C1)。再試行の
+ *   たびにqueueへ渡し直し、auto-high禁止を再試行後も維持する。
  */
-type RetrySource = { file: File; crop?: NormalizedRect; forceSingle?: boolean };
+type RetrySource = { file: File; crop?: NormalizedRect; forceSingle?: boolean; forceNonAutoHigh?: boolean };
 
 /**
  * 写真単位のグループ管理(v1.3 §16.5)。photoIdをRowに持たせず、refのMap(非永続)で
@@ -134,7 +140,18 @@ export default function App() {
         if (!rowId || activeJobRef.current.get(rowId) !== photoJobId) return; // 削除済み・無効化済みのjob
         const originalRow = rowsRef.current.find((r) => r.id === rowId);
         const originalSource = retryFilesRef.current.get(rowId);
-        if (!originalRow || !originalSource) return;
+        // reducer(`replacePendingRow`)が置換を拒否する条件を、Map更新前に確認する
+        // (Codexレビュー最終ゲート指摘I6)。行が既に削除された、またはユーザーが
+        // 検出中に手修正して`processing:false`になった場合、reducerはno-opになるが、
+        // それより前にjob/File/グループのMapを更新してしまうと、存在しない新行への
+        // 参照(activeJobRef/jobRowRef)・解放されないFile(retryFilesRef)・孤立した
+        // グループ(photoGroupRef)が残り続ける。拒否される場合は何も登録せず、
+        // 古いjob・Fileの後始末だけ行う。
+        if (!originalRow || !originalRow.processing || !originalSource) {
+          invalidateJobForRow(rowId);
+          retryFilesRef.current.delete(rowId);
+          return;
+        }
 
         invalidateJobForRow(rowId);
         retryFilesRef.current.delete(rowId);
@@ -150,7 +167,13 @@ export default function App() {
           const newRowId = newRowIds[i];
           activeJobRef.current.set(newRowId, region.jobId);
           jobRowRef.current.set(region.jobId, newRowId);
-          retryFilesRef.current.set(newRowId, { file: originalSource.file, crop: region.crop });
+          // ambiguous(§16.3安全弁)由来の領域は、再試行時もauto-high禁止を維持できる
+          // よう`forceNonAutoHigh`を保存しておく(Codexレビュー最終ゲート指摘C1)。
+          retryFilesRef.current.set(newRowId, {
+            file: originalSource.file,
+            crop: region.crop,
+            forceNonAutoHigh: flags.ambiguous,
+          });
         });
 
         photoGroupRef.current.set(photoJobId, {
@@ -233,17 +256,39 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.month, state.rows, state.people]);
 
+  // v1.3(§16.5、Codexレビュー最終ゲート指摘I7): 正常完了(全領域成功・ambiguous/
+  // nearLimitなし)したPhotoGroupの元Fileを解放する。`photoGroupRef`のエントリ自体を
+  // 削除することでFile参照を切る(回復導線を表示する理由が無くなったグループを
+  // 保持し続ける必要も無い)。30枚取り込み等では、圧縮済みFileだけでも大きな保持に
+  // なるため、安全に解放できるグループは都度取り除く。
+  useEffect(() => {
+    for (const [photoJobId, group] of photoGroupRef.current) {
+      const rows = group.rowIds.map((id) => state.rows.find((r) => r.id === id)).filter((r): r is Row => Boolean(r));
+
+      const settled = rows.length === group.rowIds.length && rows.every((r) => !r.processing);
+      const failed = rows.some((r) => r.status === "failed");
+
+      if (settled && !failed && !group.ambiguous && !group.nearLimit) {
+        photoGroupRef.current.delete(photoJobId);
+      }
+    }
+  }, [state.rows]);
+
   // 行(rowId)に対して新しい試行(jobId)を発行してenqueueする。以前その行に紐づいて
   // いたjobId(あれば)はここで置き換えられ、以後は「アクティブでない」ため、後から
   // 遅れて届く結果は無視される(Codexレビュー再指摘C1)。
-  // v1.3(§16.4): `source.crop`/`source.forceSingle`はそのままqueueへ渡す(通常の新規写真は
-  // どちらも未指定)。
+  // v1.3(§16.4): `source.crop`/`source.forceSingle`/`source.forceNonAutoHigh`はそのまま
+  // queueへ渡す(通常の新規写真はいずれも未指定)。
   const enqueueForRow = (rowId: string, source: RetrySource) => {
     invalidateJobForRow(rowId); // 前のjob(あれば)の逆引きエントリも解放してから差し替える
     const jobId = crypto.randomUUID();
     activeJobRef.current.set(rowId, jobId);
     jobRowRef.current.set(jobId, rowId);
-    queueRef.current?.enqueue(jobId, source.file, { crop: source.crop, forceSingle: source.forceSingle });
+    queueRef.current?.enqueue(jobId, source.file, {
+      crop: source.crop,
+      forceSingle: source.forceSingle,
+      forceNonAutoHigh: source.forceNonAutoHigh,
+    });
   };
 
   const onFiles = (payerId: string, files: File[]) => {
@@ -384,10 +429,18 @@ export default function App() {
   // v1.3(§16.5): グループ内に失敗行がある・領域判定が曖昧(ambiguous)・領域数が
   // 上限付近(nearLimit)の場合のみ、そのグループの最後の行の直後に回復導線
   // (2ボタン)を表示する。手動の矩形編集・分割/結合UIは作らない(仕様通り)。
+  //
+  // `hasFailed`は`status==="failed"`かつ`processing:false`(=OCRが完了して確定的に
+  // 失敗した)行に限定する(Codexレビュー最終ゲート指摘M1)。展開直後の全領域は
+  // 一時的に`status:"failed", processing:true`になるため、これを含めてしまうと
+  // 正常な複数写真でもOCR中から誤って回復ボタンが表示されてしまう。
   function findRecoveryGroupForRow(rowId: string): { photoJobId: string; group: PhotoGroup } | null {
     for (const [photoJobId, group] of photoGroupRef.current) {
       if (group.rowIds.length === 0 || group.rowIds[group.rowIds.length - 1] !== rowId) continue;
-      const hasFailed = group.rowIds.some((id) => state.rows.find((r) => r.id === id)?.status === "failed");
+      const hasFailed = group.rowIds.some((id) => {
+        const row = state.rows.find((r) => r.id === id);
+        return row?.status === "failed" && !row.processing;
+      });
       if (group.ambiguous || group.nearLimit || hasFailed) return { photoJobId, group };
       return null;
     }
@@ -411,8 +464,12 @@ export default function App() {
       type: "addRows",
       rows: [{ id, payerId, amountYen: null, label, status: "failed", source: "ocr", candidates: [], processing: true }],
     });
-    retryFilesRef.current.set(id, { file: group.file });
-    enqueueForRow(id, { file: group.file, forceSingle: true });
+    // 再試行用に保存するRetrySourceにも`forceSingle:true`を含める(Codexレビュー
+    // 最終ゲート指摘I5)。含めないと、この読み直し自体が失敗した後に通常の
+    // 「再試行」ボタンを押した際、通常の検出経路へ戻ってしまい再び誤分割されうる。
+    const retrySource: RetrySource = { file: group.file, forceSingle: true };
+    retryFilesRef.current.set(id, retrySource);
+    enqueueForRow(id, retrySource);
   };
 
   /** §16.5「削除して撮り直す」: 2枚を1領域に誤結合した場合の回復。グループの行を全て削除するのみ。 */

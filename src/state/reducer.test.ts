@@ -666,6 +666,51 @@ describe("replacePendingRow (v1.3 §16.4: プレースホルダ行→N行への�
     expect(new Set(labels).size).toBe(labels.length); // 重複なし
   });
 
+  test("採番済みplaceholderを2件同時追加して順次展開しても、番号が維持されギャップ・重複が出ない(Codexレビュー最終ゲート指摘I3)", () => {
+    // 実運用(App.tsx onFiles)では、複数写真を同時追加した時点で各プレースホルダは
+    // 既に連番のラベル(「レシート 1」「レシート 2」)を持つ。従来実装は置換時に
+    // 「プレースホルダを除いた行群の最大番号+1」から採番していたため、写真Aを
+    // 2領域へ展開すると写真Bの「2」が最大値になり、Aが「3」「4」になってしまい
+    // (「同じ番号から連番」という設計と矛盾し)、Bの展開時には「1」「2」が失われていた。
+    let s = reducer(base, {
+      type: "addRows",
+      rows: [
+        row({ id: "phA", label: "レシート 1", processing: true }),
+        row({ id: "phB", label: "レシート 2", processing: true }),
+      ],
+    });
+
+    // 写真A(プレースホルダ「レシート 1」)を先に2領域へ展開する。
+    s = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "phA",
+      newRows: [
+        { id: "a1", payerId: HUSBAND_ID },
+        { id: "a2", payerId: HUSBAND_ID },
+      ],
+    });
+    // Aは自身の番号(1)から連番になり、後続の自動採番行(B=「レシート 2」)は
+    // N-1(=1)だけシフトされ「レシート 3」になる(番号が失われない)。
+    expect(s.rows.map((r) => ({ id: r.id, label: r.label }))).toEqual([
+      { id: "a1", label: "レシート 1" },
+      { id: "a2", label: "レシート 2" },
+      { id: "phB", label: "レシート 3" },
+    ]);
+
+    // 続けて写真B(シフト後は「レシート 3」)を2領域へ展開する。
+    s = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "phB",
+      newRows: [
+        { id: "b1", payerId: HUSBAND_ID },
+        { id: "b2", payerId: HUSBAND_ID },
+      ],
+    });
+    const labels = s.rows.map((r) => r.label);
+    expect(labels).toEqual(["レシート 1", "レシート 2", "レシート 3", "レシート 4"]);
+    expect(new Set(labels).size).toBe(labels.length); // 重複なし、ギャップなし
+  });
+
   test("payerIdがpeopleに存在しないnewRowsエントリは除外する(参照整合性)", () => {
     const s = reducer(base, {
       type: "addRows",

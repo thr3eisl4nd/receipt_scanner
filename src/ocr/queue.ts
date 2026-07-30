@@ -89,10 +89,15 @@ export type QueueCallbacks = {
  * - `forceSingle`指定時: 検出(detect)自体をスキップし、写真全体を1領域として
  *   従来経路で処理する(§16.5「写真全体を1枚として読み直す」の回復導線)。
  * どちらも未指定なら、通常の新規写真として検出→領域判定から処理する。
+ * - `forceNonAutoHigh`(Codexレビュー最終ゲート指摘C1): `crop`指定の再試行が、
+ *   元々`ambiguous`(§16.3安全弁)だった領域の再試行である場合にtrueを渡す。
+ *   再試行結果がauto-highでも`needs-review`へ格下げし続け、「ambiguousな行を
+ *   再試行するとauto-high禁止が外れる」事故を防ぐ(呼び出し側=App.tsxが
+ *   `RetrySource`にこのフラグを保存し、再試行のたびに渡し直す)。
  */
-export type EnqueueOptions = { crop?: NormalizedRect; forceSingle?: boolean };
+export type EnqueueOptions = { crop?: NormalizedRect; forceSingle?: boolean; forceNonAutoHigh?: boolean };
 
-type Item = { id: string; file: File } & EnqueueOptions;
+type Item = { id: string; file: File; generation: number } & EnqueueOptions;
 
 /**
  * `loadAsCanvas`/`enhanceContrast`/`toThumbnailBlob`/`toPreviewBlob`の差し替えポイント。
@@ -119,6 +124,20 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
   canvas.width = 1;
   canvas.height = 1;
 }
+
+/** 正規化座標系での「画像全体」矩形(Codexレビュー最終ゲート指摘I4: ambiguous時の
+ *  OCR入力は検出文字群のbboxではなく写真全体に固定する)。 */
+const FULL_RECT: NormalizedRect = { x: 0, y: 0, width: 1, height: 1 };
+
+/**
+ * §16.1: パス1(検出専用実行)の入力は長辺1200px(仕様・検証スパイクの調整値。
+ * Codexレビュー最終ゲート指摘I8)。完全OCR(1枚運用・領域クロップ運用とも共通)の
+ * 入力は従来通り長辺1600px。`SourceImage`を1回だけデコードし、そこから
+ * 検出用(1200px)・OCR用(1600px)の2つのcanvasをそれぞれ`cropToCanvas`で
+ * 生成する(デコード回数を増やさずに済む)。
+ */
+const DETECT_LONG_EDGE = 1200;
+const RECOGNIZE_LONG_EDGE = 1600;
 
 /**
  * [仮説C] コントラスト再試行のゲート閾値(調査由来: `.superpowers/sdd/ocr-investigation.md`
@@ -267,6 +286,27 @@ export function createOcrQueue(
   // 待機を解決するための単純なイベント通知。
   let disposed = false;
   let idleWaiters: Array<() => void> = [];
+
+  /**
+   * キャンセル世代トークン(Codexレビュー最終ゲート指摘I1)。
+   *
+   * v1.3以前は「実行中の1件」が高々1枚のOCRだったため、`cancelAll()`は`pending`
+   * (未着手分)だけを破棄すれば十分だった。v1.3では実行中の1写真ジョブが最大
+   * `MAX_REGIONS`(既定8)個の領域処理を内包するため、`cancelAll()`/`dispose()`が
+   * 呼ばれた後もその写真の残り領域のOCRが最後まで走り、大きな`ImageBitmap`
+   * (`SourceImage`)も全領域完了まで保持され続けてしまう。
+   *
+   * `enqueue()`時点の`cancelGeneration`を各アイテムへ焼き付け、`cancelAll()`が
+   * 呼ばれるたびにこの世代を進める。実行中の写真ジョブは領域ループの各反復前に
+   * `canceled(item)`を確認し、世代が変わっていれば(=cancelAll済み)残りの領域には
+   * 進まずbreakする(`disposed`も同じ判定に含める。dispose後の継続処理を止める
+   * という点でcancelAllと同じ効果を持たせるため)。
+   */
+  let cancelGeneration = 0;
+
+  function canceled(item: Item): boolean {
+    return disposed || item.generation !== cancelGeneration;
+  }
 
   function notifyIdle(): void {
     const waiters = idleWaiters;
@@ -434,8 +474,11 @@ export function createOcrQueue(
    * v1.3(§16.4): 個別領域ジョブ(内部生成 or ユーザーによる`crop`指定の再試行)。
    * 元Fileを`loadSourceImage`で再デコードし、`crop`(正規化座標)だけを元解像度から
    * クロップして通常のOCRパイプラインへ渡す。検出(detect)・領域判定はやり直さない。
+   *
+   * `forceNonAutoHigh`(Codexレビュー最終ゲート指摘C1): 再試行元がambiguousだった
+   * 場合にtrueを渡す。§16.3の安全弁(auto-high禁止)を再試行でも維持するため。
    */
-  async function processRegionJob(id: string, file: File, crop: NormalizedRect): Promise<void> {
+  async function processRegionJob(id: string, file: File, crop: NormalizedRect, forceNonAutoHigh: boolean): Promise<void> {
     const loadSource = deps.loadSourceImage ?? loadSourceImage;
     let source: SourceImage;
     try {
@@ -446,8 +489,18 @@ export function createOcrQueue(
       return;
     }
     try {
-      const cropCanvas = source.cropToCanvas(crop, 1600);
-      await processCanvas(id, cropCanvas, false);
+      // クロップ生成自体の例外(Canvas確保失敗・2D context取得失敗・drawImage失敗等)を
+      // catchする(Codexレビュー最終ゲート指摘I2)。ここで捕まえないと`processItem()`が
+      // rejectし、この行が`processing:true`のまま永久に残留する。
+      let cropCanvas: HTMLCanvasElement;
+      try {
+        cropCanvas = source.cropToCanvas(crop, RECOGNIZE_LONG_EDGE);
+      } catch (err) {
+        console.error("Region crop failed:", id, err);
+        emitResult(id, failedPatch("ocr"));
+        return;
+      }
+      await processCanvas(id, cropCanvas, forceNonAutoHigh);
     } finally {
       source.close();
     }
@@ -472,28 +525,46 @@ export function createOcrQueue(
 
   /**
    * v1.3の中心関数: 新規写真(`crop`/`forceSingle`いずれも未指定)を検出→領域判定から
-   * 処理する。§16.1のパス1(検出専用実行)→再帰XY-cut(`regionDetection.ts`)→
+   * 処理する。§16.1のパス1(検出専用実行、長辺1200px)→再帰XY-cut(`regionDetection.ts`)→
    * LayoutDecisionに応じて分岐する:
    *
-   * - `single`: 従来経路(`processWholePhoto`)にそのまま委譲する。1枚運用との完全互換。
+   * - `single`: 写真全体を長辺1600pxへ正規化し直し、従来経路(1枚運用)と同じ入力で
+   *   OCRする。
    * - `multiple`/`ambiguous`: `onRegions`で通知したうえで、元解像度から領域ごとに
    *   クロップ(`SourceImage`)→領域ごとにOCR、を直列実行する。`ambiguous`は
-   *   fallbackRegion(写真全体)を単一領域として扱いつつ、auto-highを禁止する
-   *   (`runOcrPipeline`の`forceNonAutoHigh`)。
+   *   写真全体(検出文字群のbboxではなく)を単一領域として扱いつつ、auto-highを
+   *   禁止する(`runOcrPipeline`の`forceNonAutoHigh`、Codexレビュー最終ゲート指摘I4)。
+   *
+   * `SourceImage`は1回だけデコードし、検出用(1200px)・完全OCR用(1600px、単一/
+   * 領域クロップとも)のいずれのcanvas生成にも使い回す(Codexレビュー最終ゲート
+   * 指摘I8: 検出入力を仕様通り長辺1200pxにしつつ、デコード回数を増やさないため)。
    */
   async function processNewPhoto(item: Item): Promise<void> {
-    let canvas: HTMLCanvasElement;
+    const loadSource = deps.loadSourceImage ?? loadSourceImage;
+    let source: SourceImage;
     try {
-      canvas = await deps.loadAsCanvas(item.file);
+      source = await loadSource(item.file);
     } catch (err) {
-      console.error("Image load failed:", item.file.name, err);
+      console.error("Source image load failed:", item.file.name, err);
       emitResult(item.id, failedPatch(classifyLoadError(err)));
+      return;
+    }
+
+    let detectCanvas: HTMLCanvasElement;
+    try {
+      detectCanvas = source.cropToCanvas(FULL_RECT, DETECT_LONG_EDGE);
+    } catch (err) {
+      // 検出用canvas自体の生成失敗(Canvas確保失敗・drawImage失敗等)も、この写真
+      // ジョブをfailed確定する(Codexレビュー最終ゲート指摘I2と同じ考え方)。
+      console.error("Detect canvas creation failed:", item.file.name, err);
+      source.close();
+      emitResult(item.id, failedPatch("ocr"));
       return;
     }
 
     let boxes: OcrBox[];
     try {
-      boxes = await engine.detect(canvas);
+      boxes = await engine.detect(detectCanvas);
     } catch (err) {
       // 検出専用実行自体の失敗は、写真全体を1領域として扱う安全側フォールバックにする
       // (§16.3の安全弁と同じ考え方: 分割根拠を得られないなら分割しない)。
@@ -501,58 +572,77 @@ export function createOcrQueue(
       boxes = [];
     }
 
-    const decision = buildLayoutDecision(boxes, canvas.width, canvas.height);
+    const decision = buildLayoutDecision(boxes, detectCanvas.width, detectCanvas.height);
+    // 後段の正規化座標計算に使うため、解放前に幅・高さを控えておく。
+    const detectWidth = detectCanvas.width;
+    const detectHeight = detectCanvas.height;
+    releaseCanvas(detectCanvas);
 
     if (decision.kind === "single") {
-      // 1枚運用との完全互換: 検出canvasをそのままOCRへ渡す(再クロップしない)。
-      await processCanvas(item.id, canvas, false);
+      // 1枚運用との互換: 写真全体を長辺1600pxへ正規化し直してOCRする(検出用1200pxの
+      // canvasはここでは使わない。再デコードではなく同一`SourceImage`からの再クロップ
+      // なので追加のFile decodeは発生しない)。
+      let wholeCanvas: HTMLCanvasElement;
+      try {
+        wholeCanvas = source.cropToCanvas(FULL_RECT, RECOGNIZE_LONG_EDGE);
+      } catch (err) {
+        console.error("Whole photo canvas creation failed:", item.file.name, err);
+        source.close();
+        emitResult(item.id, failedPatch("ocr"));
+        return;
+      }
+      source.close();
+      await processCanvas(item.id, wholeCanvas, false);
       return;
     }
 
-    // multiple/ambiguous: 検出用canvasはここで役目を終える(OCRには使わない)。
     const regions = decision.kind === "multiple" ? decision.regions : [decision.fallbackRegion];
     const ambiguous = decision.kind === "ambiguous";
     const nearLimit = regions.length >= DEFAULT_THRESHOLDS.maxRegions - 1;
 
     // 検出canvas座標系での正規化座標(0..1)は、EXIF補正済み・無クロップの元画像に対する
-    // 正規化座標と一致する(`loadAsCanvas`は縦横比を保ったまま一様縮小するのみのため)。
-    // そのため元解像度への再デコード(`loadSourceImage`)より前に計算できる。
+    // 正規化座標と一致する(`cropToCanvas(FULL_RECT, ...)`は縦横比を保ったまま一様
+    // 縮小するのみのため)。ambiguous(§16.3安全弁)の場合は、fallbackRegion(検出文字群
+    // のbbox)ではなく写真全体を固定でOCR入力にする(Codexレビュー最終ゲート指摘I4:
+    // 上限到達・断片疑いこそ、bboxクロップで周辺レシートを落とすべきではない)。
     const regionDescriptors: RegionDescriptor[] = regions.map((region, i) => {
-      const cropRect = cropRectForRegion(region, canvas.width, canvas.height);
-      return {
-        jobId: `${item.id}#${i}`,
-        crop: {
-          x: cropRect.x / canvas.width,
-          y: cropRect.y / canvas.height,
-          width: cropRect.width / canvas.width,
-          height: cropRect.height / canvas.height,
-        },
-      };
+      const crop: NormalizedRect = ambiguous
+        ? FULL_RECT
+        : (() => {
+            const cropRect = cropRectForRegion(region, detectWidth, detectHeight);
+            return {
+              x: cropRect.x / detectWidth,
+              y: cropRect.y / detectHeight,
+              width: cropRect.width / detectWidth,
+              height: cropRect.height / detectHeight,
+            };
+          })();
+      return { jobId: `${item.id}#${i}`, crop };
     });
-    releaseCanvas(canvas);
 
     emitRegions(item.id, regionDescriptors, { ambiguous, nearLimit });
     if (!ambiguous) {
       emitStatus({ kind: "regionsFound", count: regionDescriptors.length });
     }
 
-    const loadSource = deps.loadSourceImage ?? loadSourceImage;
-    let source: SourceImage;
-    try {
-      source = await loadSource(item.file);
-    } catch (err) {
-      console.error("Source image load failed:", item.file.name, err);
-      const failKind = classifyLoadError(err);
-      for (const desc of regionDescriptors) emitResult(desc.jobId, failedPatch(failKind));
-      return;
-    }
-
     try {
       for (let i = 0; i < regionDescriptors.length; i++) {
+        // キャンセル世代トークン(Codexレビュー最終ゲート指摘I1): cancelAll()/dispose()が
+        // 呼ばれた後は、残りの領域のOCRを開始しない。SourceImageはこのループを抜けた
+        // 直後、finallyで即closeされる(最後の領域まで保持し続けない)。
+        if (canceled(item)) break;
         const desc = regionDescriptors[i];
         emitStatus({ kind: "regionProcessing", current: i + 1, total: regionDescriptors.length });
-        const cropCanvas = source.cropToCanvas(desc.crop, 1600);
-        await processCanvas(desc.jobId, cropCanvas, ambiguous);
+        try {
+          // クロップ生成自体の例外をcatchする(Codexレビュー最終ゲート指摘I2)。
+          // ここで捕まえないと、この領域の行が`processing:true`のまま永久に残留し、
+          // かつ後続領域のOCRにも進めなくなる。
+          const cropCanvas = source.cropToCanvas(desc.crop, RECOGNIZE_LONG_EDGE);
+          await processCanvas(desc.jobId, cropCanvas, ambiguous);
+        } catch (err) {
+          console.error("Region crop failed:", desc.jobId, err);
+          emitResult(desc.jobId, failedPatch("ocr"));
+        }
       }
     } finally {
       source.close();
@@ -561,7 +651,7 @@ export function createOcrQueue(
 
   async function processItem(item: Item): Promise<void> {
     if (item.crop) {
-      await processRegionJob(item.id, item.file, item.crop);
+      await processRegionJob(item.id, item.file, item.crop, item.forceNonAutoHigh ?? false);
       return;
     }
     if (item.forceSingle) {
@@ -640,15 +730,30 @@ export function createOcrQueue(
         total = 0;
         done = 0;
       }
-      pending.push({ id, file, crop: options?.crop, forceSingle: options?.forceSingle });
+      pending.push({
+        id,
+        file,
+        crop: options?.crop,
+        forceSingle: options?.forceSingle,
+        forceNonAutoHigh: options?.forceNonAutoHigh,
+        generation: cancelGeneration,
+      });
       total++;
       kick();
     },
-    /** 未処理分を全部キャンセルする(処理済み・処理中の行はそのまま維持)。 */
+    /**
+     * 未処理分を全部キャンセルする(処理済み・処理中の行はそのまま維持)。
+     *
+     * `cancelGeneration`を進めることで、現在実行中の写真ジョブ(v1.3: 最大8領域を
+     * 内包しうる)の残り領域ループも次の反復で停止させる(Codexレビュー最終ゲート
+     * 指摘I1)。実行中のONNX推論そのものは中断できないため「今処理中の1領域」は
+     * 最後まで走るが、それ以降の領域には進まない。
+     */
     cancelAll() {
-      const canceled = pending.splice(0);
-      done += canceled.length; // 完了表示の分母/分子を一致させる(Codexレビュー指摘)
-      for (const item of canceled) {
+      cancelGeneration++;
+      const canceledItems = pending.splice(0);
+      done += canceledItems.length; // 完了表示の分母/分子を一致させる(Codexレビュー指摘)
+      for (const item of canceledItems) {
         emitResult(item.id, failedPatch());
       }
     },

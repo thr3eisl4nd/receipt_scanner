@@ -148,32 +148,55 @@ export function reducer(state: AppState, action: Action): AppState {
     // - processing中の行のみ対象(ユーザーが既に手修正して processing:false になった行は
     //   置換しない。手修正を無警告で消し去らないため、applyOcrResultと同じ考え方)。
     // - 元の行の位置(index)へそのままN行を挿入する(一覧内の並び順を保つ)。
-    // - ラベル(「レシート N」)はこの置換時に、プレースホルダを除いた現在のrowsから
-    //   採番する(重複・衝突なし。プレースホルダ自身が既に番号を持っていた場合でも、
-    //   それを取り除いた状態から採番し直すため同じ番号から連番になる)。
+    //
+    // 採番(Codexレビュー最終ゲート指摘I3): プレースホルダ自身が既に自動採番ラベル
+    // (「レシート k」)を持っている場合、その番号kを維持する。複数の写真を同時追加した
+    // 直後は、各写真のプレースホルダが「レシート 1」「レシート 2」のように連番で
+    // 既に確定しているため(`onFiles`のlabelFor)、後から展開されるプレースホルダの
+    // 番号を使い切ってしまわないよう、k超の自動採番行をN-1(N=実際に追加される行数)
+    // だけ同一action内でシフトしてから、新領域をk, k+1, ..., k+N-1とする。
+    // プレースホルダのラベルが自動採番形式でない場合(テスト等での「解析中…」等)は、
+    // 従来通り既存の最大番号の続きから採番する(フォールバック)。
     case "replacePendingRow": {
       const idx = state.rows.findIndex((r) => r.id === action.placeholderId);
       if (idx === -1) return state;
       if (!state.rows[idx].processing) return state;
 
+      const placeholderNumber = parseReceiptLabelNumber(state.rows[idx].label);
       const rowsWithoutPlaceholder = [...state.rows.slice(0, idx), ...state.rows.slice(idx + 1)];
-      const labelFor = nextReceiptLabel(rowsWithoutPlaceholder);
-      const newRows: Row[] = action.newRows
-        .filter((nr) => hasPayer(state.people, nr.payerId))
-        .map((nr, i) => ({
-          id: nr.id,
-          payerId: nr.payerId,
-          amountYen: null,
-          label: labelFor(i + 1),
-          status: "failed",
-          source: "ocr",
-          candidates: [],
-          processing: true,
-        }));
+      const validNewRows = action.newRows.filter((nr) => hasPayer(state.people, nr.payerId));
+
+      let labelFor: (offset: number) => string;
+      let baseRows = rowsWithoutPlaceholder;
+
+      if (placeholderNumber !== null) {
+        const k = placeholderNumber;
+        const shift = validNewRows.length - 1;
+        labelFor = (offset) => `レシート ${k + offset - 1}`;
+        if (shift !== 0) {
+          baseRows = rowsWithoutPlaceholder.map((r) => {
+            const n = parseReceiptLabelNumber(r.label);
+            return n !== null && n > k ? { ...r, label: `レシート ${n + shift}` } : r;
+          });
+        }
+      } else {
+        labelFor = nextReceiptLabel(rowsWithoutPlaceholder);
+      }
+
+      const newRows: Row[] = validNewRows.map((nr, i) => ({
+        id: nr.id,
+        payerId: nr.payerId,
+        amountYen: null,
+        label: labelFor(i + 1),
+        status: "failed",
+        source: "ocr",
+        candidates: [],
+        processing: true,
+      }));
 
       return {
         ...state,
-        rows: [...state.rows.slice(0, idx), ...newRows, ...state.rows.slice(idx + 1)],
+        rows: [...baseRows.slice(0, idx), ...newRows, ...baseRows.slice(idx)],
       };
     }
     default:
@@ -182,6 +205,14 @@ export function reducer(state: AppState, action: Action): AppState {
 }
 
 const RECEIPT_LABEL_RE = /^レシート (\d+)$/;
+
+/** ラベルが自動採番形式(「レシート N」)なら番号を、そうでなければnullを返す
+ *  (Codexレビュー最終ゲート指摘I3: `replacePendingRow`が採番維持のシフト対象を
+ *  判定するのに使う)。 */
+function parseReceiptLabelNumber(label: string): number | null {
+  const m = RECEIPT_LABEL_RE.exec(label);
+  return m ? Number(m[1]) : null;
+}
 
 /**
  * 次の自動採番ラベルの番号を、現在の行群のラベルから導出する(v1.1「Task 12」・

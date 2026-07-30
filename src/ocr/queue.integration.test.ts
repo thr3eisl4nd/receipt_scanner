@@ -24,6 +24,15 @@ describe("createOcrQueue (結合: 実extractTotal + 合成OcrLine[])", () => {
       enhanceContrast: vi.fn(() => fakeCanvas()),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      // v1.3以降、通常の新規写真経路(processNewPhoto)はSourceImage経由でデコードする
+      // (Codexレビュー最終ゲート指摘I8: 検出用1200px・完全OCR用1600pxをこの1回の
+      // デコードから使い回す)。
+      loadSourceImage: vi.fn(async () => ({
+        width: 4000,
+        height: 3000,
+        cropToCanvas: vi.fn(() => fakeCanvas()),
+        close: vi.fn(),
+      })),
     };
     const engine: OcrEngine = {
       initialize: vi.fn(async () => undefined),

@@ -3,6 +3,7 @@ import type { OcrEngine, OcrLine } from "./engine";
 import type { ExtractResult } from "../extract/extractTotal";
 import { createOcrQueue, type OcrQueueDeps, type QueueStatusEvent } from "./queue";
 import { UnsupportedFormatError, ImageTooLargeError, ImageDecodeError } from "../image/preprocess";
+import type { SourceImage } from "../image/sourceImage";
 
 // extractTotalは複雑な座標ヒューリスティックを持つ純粋関数なので、queueのテストでは
 // モックして戻り値を直接制御する(queueの直列処理・再試行・結果反映ロジックのみを検証する)。
@@ -15,12 +16,34 @@ function fakeCanvas(): HTMLCanvasElement {
   return { width: 100, height: 100 } as unknown as HTMLCanvasElement;
 }
 
+/**
+ * v1.3(複数レシート自動分割)以降、通常の新規写真経路(`processNewPhoto`)は
+ * `loadAsCanvas`ではなく`SourceImage`(`loadSourceImage`)経由でデコードし、検出用
+ * (1200px)・完全OCR用(1600px)のいずれのcanvasも同一`SourceImage`からの
+ * `cropToCanvas`で生成する(Codexレビュー最終ゲート指摘I8)。本ファイルの大半の
+ * テストは「1枚の写真=1レシート」(kind:"single")の従来動作を検証するものなので、
+ * 既定の`SourceImage`スタブは常に新規`fakeCanvas()`を返せば足りる。
+ */
+function fakeSourceImage(
+  cropToCanvasImpl: (rect: unknown, maxEdge: number) => HTMLCanvasElement = () => fakeCanvas(),
+): SourceImage {
+  return {
+    width: 4000,
+    height: 3000,
+    cropToCanvas: vi.fn(cropToCanvasImpl),
+    close: vi.fn(),
+  };
+}
+
 function makeDeps(): OcrQueueDeps {
   return {
+    // v1.3以降`processNewPhoto`からは使われないが(forceSingle経路専用になった)、
+    // `OcrQueueDeps`の必須フィールドとして残す。
     loadAsCanvas: vi.fn(async () => fakeCanvas()),
     enhanceContrast: vi.fn(() => fakeCanvas()),
     toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
     toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+    loadSourceImage: vi.fn(async () => fakeSourceImage()),
   };
 }
 
@@ -374,11 +397,7 @@ describe("createOcrQueue", () => {
   it("処理後にcanvasを明示解放する(width/height=1)。再試行時はenhanced版も解放する", async () => {
     const canvases: HTMLCanvasElement[] = [];
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => {
-        const c = fakeCanvas();
-        canvases.push(c);
-        return c;
-      }),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()), // v1.3以降processNewPhotoからは未使用
       enhanceContrast: vi.fn(() => {
         const c = fakeCanvas();
         canvases.push(c);
@@ -386,6 +405,13 @@ describe("createOcrQueue", () => {
       }),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () =>
+        fakeSourceImage(() => {
+          const c = fakeCanvas();
+          canvases.push(c);
+          return c;
+        }),
+      ),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock
@@ -398,7 +424,9 @@ describe("createOcrQueue", () => {
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
 
-    expect(canvases).toHaveLength(2);
+    // 検出用(1200px)canvas+完全OCR用(1600px)canvas+補正版canvasの3枚(Codexレビュー
+    // 最終ゲート指摘I8: 検出入力を1200pxにするため、検出専用canvasが1枚増えた)。
+    expect(canvases).toHaveLength(3);
     for (const c of canvases) {
       expect(c.width).toBe(1);
       expect(c.height).toBe(1);
@@ -590,14 +618,10 @@ describe("createOcrQueue", () => {
     expect(onStatus).toHaveBeenCalledWith({ kind: "model-error", message: "モデル準備に失敗しました" });
   });
 
-  it("2回目のrecognizeが例外を投げても1回目の結果(needs-review)を維持し、両canvasを解放する", async () => {
+  it("2回目のrecognizeが例外を投げても1回目の結果(needs-review)を維持し、全canvasを解放する", async () => {
     const canvases: HTMLCanvasElement[] = [];
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => {
-        const c = fakeCanvas();
-        canvases.push(c);
-        return c;
-      }),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()), // v1.3以降processNewPhotoからは未使用
       enhanceContrast: vi.fn(() => {
         const c = fakeCanvas();
         canvases.push(c);
@@ -605,6 +629,13 @@ describe("createOcrQueue", () => {
       }),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () =>
+        fakeSourceImage(() => {
+          const c = fakeCanvas();
+          canvases.push(c);
+          return c;
+        }),
+      ),
     };
     let recognizeCallCount = 0;
     const engine = makeEngine(() => {
@@ -626,7 +657,8 @@ describe("createOcrQueue", () => {
       candidates: [900],
       processing: false,
     });
-    expect(canvases).toHaveLength(2);
+    // 検出用(1200px)+完全OCR用(1600px)+補正版の3枚(Codexレビュー最終ゲート指摘I8)。
+    expect(canvases).toHaveLength(3);
     for (const c of canvases) {
       expect(c.width).toBe(1);
       expect(c.height).toBe(1);
@@ -641,6 +673,7 @@ describe("createOcrQueue", () => {
       }),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () => fakeSourceImage()),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock.mockReturnValueOnce(resultOf("needs-review", 800, [800]));
@@ -661,16 +694,19 @@ describe("createOcrQueue", () => {
   });
 
   it("1件目が完全に失敗しても2件目は逐次処理される", async () => {
+    // v1.3以降、通常の新規写真経路は`loadSourceImage`(SourceImage)でデコードする
+    // (Codexレビュー最終ゲート指摘I8)ため、デコード失敗はここで再現する。
     let loadCallCount = 0;
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => {
-        loadCallCount++;
-        if (loadCallCount === 1) throw new Error("load boom");
-        return fakeCanvas();
-      }),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()),
       enhanceContrast: vi.fn(() => fakeCanvas()),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () => {
+        loadCallCount++;
+        if (loadCallCount === 1) throw new Error("load boom");
+        return fakeSourceImage();
+      }),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock.mockReturnValue(resultOf("auto-high", 300, [300]));
@@ -682,7 +718,7 @@ describe("createOcrQueue", () => {
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
 
-    // loadAsCanvas失敗は、instanceofで分類できない汎用Error(テストスタブ含む)の場合
+    // デコード失敗は、instanceofで分類できない汎用Error(テストスタブ含む)の場合
     // "image-decode"にフォールバックする(Codexレビュー最終ゲート指摘I1)。
     expect(onResult).toHaveBeenCalledWith("a", {
       amountYen: null,
@@ -701,14 +737,15 @@ describe("createOcrQueue", () => {
 
   // --- Codexレビュー最終ゲート指摘I1(失敗種別の区別)の回帰テスト ---
 
-  it("loadAsCanvasがUnsupportedFormatErrorを投げた場合、failureKind:'unsupported-format'として結果を返す", async () => {
+  it("SourceImageデコードがUnsupportedFormatErrorを投げた場合、failureKind:'unsupported-format'として結果を返す(Codexレビュー最終ゲート指摘I8: 通常経路のデコードはloadAsCanvasからloadSourceImageへ変わった)", async () => {
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => {
-        throw new UnsupportedFormatError();
-      }),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()),
       enhanceContrast: vi.fn(() => fakeCanvas()),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () => {
+        throw new UnsupportedFormatError();
+      }),
     };
     const engine = makeEngine(() => [line()]);
     const onResult = vi.fn();
@@ -730,14 +767,15 @@ describe("createOcrQueue", () => {
     expect(extractTotalMock).not.toHaveBeenCalled();
   });
 
-  it("loadAsCanvasがImageTooLargeErrorを投げた場合、failureKind:'image-too-large'として結果を返す", async () => {
+  it("SourceImageデコードがImageTooLargeErrorを投げた場合、failureKind:'image-too-large'として結果を返す", async () => {
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => {
-        throw new ImageTooLargeError();
-      }),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()),
       enhanceContrast: vi.fn(() => fakeCanvas()),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () => {
+        throw new ImageTooLargeError();
+      }),
     };
     const engine = makeEngine(() => [line()]);
     const onResult = vi.fn();
@@ -755,14 +793,15 @@ describe("createOcrQueue", () => {
     });
   });
 
-  it("loadAsCanvasがImageDecodeErrorを投げた場合も、failureKind:'image-decode'として結果を返す", async () => {
+  it("SourceImageデコードがImageDecodeErrorを投げた場合も、failureKind:'image-decode'として結果を返す", async () => {
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => {
-        throw new ImageDecodeError();
-      }),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()),
       enhanceContrast: vi.fn(() => fakeCanvas()),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () => {
+        throw new ImageDecodeError();
+      }),
     };
     const engine = makeEngine(() => [line()]);
     const onResult = vi.fn();
@@ -851,14 +890,20 @@ describe("createOcrQueue", () => {
     );
   });
 
-  it("recognizeへ渡るcanvasは1回目が元画像、2回目が補正後画像である", async () => {
-    const original = fakeCanvas();
+  it("recognizeへ渡るcanvasは1回目が完全OCR用(1600px)canvas、2回目が補正後画像である(検出用1200px canvasはrecognizeへ渡らない)", async () => {
+    const wholeCanvas = fakeCanvas();
+    const detectCanvasStub = fakeCanvas();
     const enhancedCanvas = fakeCanvas();
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => original),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()),
       enhanceContrast: vi.fn(() => enhancedCanvas),
       toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      // maxEdgeで検出用(1200px)canvasと完全OCR用(1600px)canvasを区別する
+      // (Codexレビュー最終ゲート指摘I8)。
+      loadSourceImage: vi.fn(async () =>
+        fakeSourceImage((_rect, maxEdge) => (maxEdge === 1600 ? wholeCanvas : detectCanvasStub)),
+      ),
     };
     const seenCanvases: HTMLCanvasElement[] = [];
     const engine = makeEngine((canvas) => {
@@ -875,7 +920,31 @@ describe("createOcrQueue", () => {
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
 
-    expect(seenCanvases).toEqual([original, enhancedCanvas]);
+    expect(seenCanvases).toEqual([wholeCanvas, enhancedCanvas]);
+  });
+
+  // --- Codexレビュー最終ゲート指摘I8(検出入力の長辺)の回帰テスト ---
+
+  it("検出専用実行(パス1)の入力は長辺1200pxである(仕様§16.1/§16.6・検証スパイクと一致させる)", async () => {
+    const source = fakeSourceImage();
+    const deps: OcrQueueDeps = { ...makeDeps(), loadSourceImage: vi.fn(async () => source) };
+    const engine = makeEngine(() => [line()]);
+    extractTotalMock.mockReturnValue(resultOf("auto-high"));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    // 1回目のcropToCanvas呼び出し(検出用canvas生成)がちょうど長辺1200pxであること。
+    // 従来はloadAsCanvas既定値の1600pxがそのまま検出入力になっていた(仕様不一致)。
+    const detectCall = (source.cropToCanvas as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(detectCall[1]).toBe(1200);
+    // 2回目のcropToCanvas呼び出し(kind:"single"、完全OCR用canvas生成)は長辺1600px。
+    const wholeCall = (source.cropToCanvas as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(wholeCall[1]).toBe(1600);
+    expect(engine.detect).toHaveBeenCalledTimes(1);
   });
 
   it("完全にドレインした後の新しいバッチでもinitializeは再実行されない", async () => {
@@ -896,7 +965,7 @@ describe("createOcrQueue", () => {
 
   // --- Codexレビュー指摘(直列保証の適用範囲/例外境界)の回帰テスト ---
 
-  it("Aの補正再試行(2回目recognize)がgateで止まっている間、Bのloadは始まらない", async () => {
+  it("Aの補正再試行(2回目recognize)がgateで止まっている間、Bのデコードは始まらない", async () => {
     const deps = makeDeps();
     let recognizeCallCount = 0;
     let releaseRetry!: () => void;
@@ -921,15 +990,18 @@ describe("createOcrQueue", () => {
 
     await vi.waitFor(() => expect(recognizeCallCount).toBe(2));
 
-    // Aの再試行が止まっている間、Bはloadすら始まっていない
-    expect(deps.loadAsCanvas).toHaveBeenCalledTimes(1);
+    // Aの再試行が止まっている間、Bはデコード(loadSourceImage)すら始まっていない
+    // (Codexレビュー最終ゲート指摘I8: 通常経路のデコードはloadAsCanvasから
+    // loadSourceImageへ変わったが、「1件のjobにつき1回だけ」という回数の意味は
+    // 変わらない: 検出用1200px・OCR用1600pxのいずれも同一SourceImageの使い回し)。
+    expect(deps.loadSourceImage).toHaveBeenCalledTimes(1);
     expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
     expect(onResult).not.toHaveBeenCalled();
 
     releaseRetry();
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
 
-    expect(deps.loadAsCanvas).toHaveBeenCalledTimes(2);
+    expect(deps.loadSourceImage).toHaveBeenCalledTimes(2);
     // Aは補正版もauto-highだったので補正版採用、Bは1回目からauto-high
     expect(onResult).toHaveBeenCalledWith("a", expect.objectContaining({ status: "auto-high" }));
     expect(onResult).toHaveBeenCalledWith("b", expect.objectContaining({ status: "auto-high" }));
@@ -943,13 +1015,16 @@ describe("createOcrQueue", () => {
 
     function makeTaggedDeps(tag: string): OcrQueueDeps {
       return {
-        loadAsCanvas: vi.fn(async () => {
-          events.push(`load-${tag}`);
-          return fakeCanvas();
-        }),
+        loadAsCanvas: vi.fn(async () => fakeCanvas()),
         enhanceContrast: vi.fn(() => fakeCanvas()),
         toThumbnailBlob: vi.fn(async () => new Blob(["thumb"])),
         toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+        // v1.3以降、通常の新規写真経路のデコードはloadSourceImage経由になった
+        // (Codexレビュー最終ゲート指摘I8)。
+        loadSourceImage: vi.fn(async () => {
+          events.push(`load-${tag}`);
+          return fakeSourceImage();
+        }),
       };
     }
 
@@ -1074,15 +1149,12 @@ describe("createOcrQueue", () => {
 
   // --- Codexレビュー指摘I1(サムネイル)・I2(dispose)の回帰テスト ---
 
-  it("loadAsCanvas直後にonThumbnail・onPreviewの両方で縮小Blobを返す(OCR結果より前に届く。Codexレビュー最終ゲート指摘I2でpreviewを追加)", async () => {
+  it("SourceImageデコード直後にonThumbnail・onPreviewの両方で縮小Blobを返す(OCR結果より前に届く。Codexレビュー最終ゲート指摘I2でpreviewを追加)", async () => {
     const thumbBlob = new Blob(["thumb"]);
     const previewBlob = new Blob(["preview"]);
     const order: string[] = [];
     const deps: OcrQueueDeps = {
-      loadAsCanvas: vi.fn(async () => {
-        order.push("load");
-        return fakeCanvas();
-      }),
+      loadAsCanvas: vi.fn(async () => fakeCanvas()),
       enhanceContrast: vi.fn(() => fakeCanvas()),
       toThumbnailBlob: vi.fn(async () => {
         order.push("thumbnail");
@@ -1091,6 +1163,10 @@ describe("createOcrQueue", () => {
       toPreviewBlob: vi.fn(async () => {
         order.push("preview");
         return previewBlob;
+      }),
+      loadSourceImage: vi.fn(async () => {
+        order.push("load");
+        return fakeSourceImage();
       }),
     };
     const engine = makeEngine(() => {
@@ -1120,6 +1196,7 @@ describe("createOcrQueue", () => {
         throw new Error("thumbnail boom");
       }),
       toPreviewBlob: vi.fn(async () => new Blob(["preview"])),
+      loadSourceImage: vi.fn(async () => fakeSourceImage()),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock.mockReturnValue(resultOf("auto-high", 100, [100]));
@@ -1148,6 +1225,7 @@ describe("createOcrQueue", () => {
       toPreviewBlob: vi.fn(async () => {
         throw new Error("preview boom");
       }),
+      loadSourceImage: vi.fn(async () => fakeSourceImage()),
     };
     const engine = makeEngine(() => [line()]);
     extractTotalMock.mockReturnValue(resultOf("auto-high", 100, [100]));

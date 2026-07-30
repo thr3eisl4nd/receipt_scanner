@@ -1249,6 +1249,115 @@ describe("App", () => {
     expect(container.querySelector(".region-group-recovery")).toBeNull();
   });
 
+  it("「写真全体を1枚として読み直す」が失敗した後、通常の「再試行」でもforceSingleを維持する(Codexレビュー最終ゲート指摘I5)", async () => {
+    // 維持しないと、読み直し失敗後に通常の「再試行」を押した際に通常の検出経路へ
+    // 戻ってしまい、再び誤分割されうる。
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    const file = new File(["photo"], "photo.jpg", { type: "image/jpeg" });
+    selectFile(fileInputs[0] as HTMLInputElement, file);
+    const [photoJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    act(() => {
+      capturedCb!.onRegions!(photoJobId, [{ jobId: "amb-0", crop: { x: 0, y: 0, width: 1, height: 1 } }], {
+        ambiguous: true,
+        nearLimit: false,
+      });
+      capturedCb!.onResult("amb-0", { amountYen: 700, status: "needs-review", candidates: [700], processing: false });
+    });
+
+    await screen.findByText("写真全体を1枚として読み直す");
+    enqueueMock.mockClear();
+    fireEvent.click(screen.getByText("写真全体を1枚として読み直す"));
+
+    expect(enqueueMock).toHaveBeenCalledTimes(1);
+    const [rereadJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    // 「写真全体を1枚として読み直す」自体が失敗する
+    act(() => {
+      capturedCb!.onResult(rereadJobId, { amountYen: null, status: "failed", candidates: [], processing: false });
+    });
+    const retryButton = await screen.findByRole("button", { name: "レシート 1を再試行" });
+
+    enqueueMock.mockClear();
+    fireEvent.click(retryButton);
+
+    // 通常の「再試行」ボタンを押しても、forceSingle:trueを維持したままenqueueする
+    expect(enqueueMock).toHaveBeenCalledTimes(1);
+    const [, retriedFile, options] = enqueueMock.mock.calls[0] as [string, File, { forceSingle?: boolean } | undefined];
+    expect(retriedFile).toBe(file);
+    expect(options?.forceSingle).toBe(true);
+  });
+
+  it("処理中(展開直後でOCR結果待ち)のグループには回復ボタンを表示しない(Codexレビュー最終ゲート指摘M1)", async () => {
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["photo"], "photo.jpg", { type: "image/jpeg" }));
+    const [photoJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    act(() => {
+      capturedCb!.onRegions!(
+        photoJobId,
+        [
+          { jobId: "region-0", crop: { x: 0, y: 0, width: 0.5, height: 1 } },
+          { jobId: "region-1", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+        ],
+        { ambiguous: false, nearLimit: false },
+      );
+    });
+
+    // 展開直後、両行はまだstatus:"failed", processing:trueの状態(OCR結果待ち)。
+    // 従来はstatus==="failed"だけを見ていたため、この時点で誤って回復ボタンが
+    // 表示されてしまっていた。
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(2);
+    expect(container.querySelectorAll(".is-processing")).toHaveLength(2);
+    expect(container.querySelector(".region-group-recovery")).toBeNull();
+
+    // 両領域とも成功すれば、引き続き回復ボタンは表示されない。
+    act(() => {
+      capturedCb!.onResult("region-0", { amountYen: 500, status: "auto-high", candidates: [], processing: false });
+      capturedCb!.onResult("region-1", { amountYen: 800, status: "auto-high", candidates: [], processing: false });
+    });
+    await screen.findByRole("button", { name: amountEditLabel("レシート 1") });
+    expect(container.querySelector(".region-group-recovery")).toBeNull();
+  });
+
+  it("全領域成功後(ambiguous/nearLimitなし)はPhotoGroupを解放し、その後1行を手動で失敗状態にしても回復導線は再表示されない(Codexレビュー最終ゲート指摘I7)", async () => {
+    // グループが解放されずに残っていると、この後の「1行を空欄確定してfailedへ戻す」
+    // 操作でhasFailed経由の回復導線が復活してしまうはず。解放済みならグループの
+    // エントリ自体が無いため、再表示されない。
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    const file = new File(["photo"], "photo.jpg", { type: "image/jpeg" });
+    selectFile(fileInputs[0] as HTMLInputElement, file);
+    const [photoJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    act(() => {
+      capturedCb!.onRegions!(
+        photoJobId,
+        [
+          { jobId: "region-0", crop: { x: 0, y: 0, width: 0.5, height: 1 } },
+          { jobId: "region-1", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+        ],
+        { ambiguous: false, nearLimit: false },
+      );
+      capturedCb!.onResult("region-0", { amountYen: 500, status: "auto-high", candidates: [], processing: false });
+      capturedCb!.onResult("region-1", { amountYen: 800, status: "auto-high", candidates: [], processing: false });
+    });
+
+    await screen.findByRole("button", { name: amountEditLabel("レシート 1") });
+    expect(container.querySelector(".region-group-recovery")).toBeNull();
+
+    // レシート1の金額を空欄確定してfailedへ戻す
+    fireEvent.click(screen.getByRole("button", { name: amountEditLabel("レシート 1") }));
+    fireEvent.change(screen.getByLabelText("金額(円)"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: confirmLabel("レシート 1") }));
+    await screen.findByText("読取失敗");
+
+    // PhotoGroupは既に解放済みのため、回復導線は再表示されない
+    expect(container.querySelector(".region-group-recovery")).toBeNull();
+  });
+
   it("「削除して撮り直す」でグループの全行が削除される(§16.5)", async () => {
     const { container } = render(<App />);
     const fileInputs = container.querySelectorAll('input[type="file"]');
