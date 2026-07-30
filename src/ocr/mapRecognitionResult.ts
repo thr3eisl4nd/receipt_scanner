@@ -1,4 +1,4 @@
-import type { OcrLine } from "./engine";
+import type { OcrBox, OcrLine } from "./engine";
 
 /**
  * ライブラリの認識結果1件の構造。`ppu-paddle-ocr` の `RecognitionResult`
@@ -52,4 +52,33 @@ export function mapToOcrLines(
     });
   }
   return lines;
+}
+
+/**
+ * `OcrEngine.detect()`(検出専用API、v1.3)が返すboxをサニタイズする(`mapToOcrLines`と
+ * 同水準の防御。タスク指示: 「boxサニタイズは既存mapRecognitionResultと同水準」)。
+ *
+ * - x/y/width/height のいずれかが非有限、または width<=0/height<=0 のboxは除外する
+ *   (`regionDetection.ts`の幾何演算は有限の正の寸法を前提とするため)。
+ * - `bounds`(検出に使ったcanvasのwidth/height)でクランプし、クランプ後に交差領域が
+ *   空になるbox(画像完全に外側のbox)は除外する。
+ */
+export function sanitizeBoxes(boxes: readonly RawRecognitionResult["box"][], bounds: { width: number; height: number }): OcrBox[] {
+  const out: OcrBox[] = [];
+  for (const b of boxes) {
+    const { x, y, width, height } = b;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
+      continue;
+    }
+    if (width <= 0 || height <= 0) continue;
+
+    const x0 = Math.max(0, Math.min(bounds.width, x));
+    const y0 = Math.max(0, Math.min(bounds.height, y));
+    const x1 = Math.max(0, Math.min(bounds.width, x + width));
+    const y1 = Math.max(0, Math.min(bounds.height, y + height));
+    if (x1 <= x0 || y1 <= y0) continue;
+
+    out.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
+  }
+  return out;
 }

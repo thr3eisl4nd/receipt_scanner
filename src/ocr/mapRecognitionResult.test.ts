@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapToOcrLines } from "./mapRecognitionResult";
+import { mapToOcrLines, sanitizeBoxes } from "./mapRecognitionResult";
 
 /** 既存テストで使うboxを一切クランプしない、十分に大きな画像境界。 */
 const AMPLE_BOUNDS = { width: 10_000, height: 10_000 };
@@ -104,5 +104,50 @@ describe("mapToOcrLines", () => {
 
   it("空配列を渡すと空配列を返す", () => {
     expect(mapToOcrLines([], AMPLE_BOUNDS)).toEqual([]);
+  });
+});
+
+describe("sanitizeBoxes (v1.3: OcrEngine.detect()結果のサニタイズ)", () => {
+  it("正常なboxはそのまま通す", () => {
+    const result = sanitizeBoxes([{ x: 10, y: 20, width: 40, height: 18 }], AMPLE_BOUNDS);
+    expect(result).toEqual([{ x: 10, y: 20, width: 40, height: 18 }]);
+  });
+
+  it("非有限値を含むboxは除外する", () => {
+    const result = sanitizeBoxes(
+      [
+        { x: NaN, y: 0, width: 10, height: 10 },
+        { x: 0, y: 0, width: Infinity, height: 10 },
+        { x: 0, y: 0, width: 10, height: 10 },
+      ],
+      AMPLE_BOUNDS,
+    );
+    expect(result).toEqual([{ x: 0, y: 0, width: 10, height: 10 }]);
+  });
+
+  it("width/heightが0以下のboxは除外する", () => {
+    const result = sanitizeBoxes(
+      [
+        { x: 0, y: 0, width: 0, height: 10 },
+        { x: 0, y: 0, width: 10, height: -5 },
+      ],
+      AMPLE_BOUNDS,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("画像完全に外側のboxは除外し、境界にまたがるboxは切り詰める", () => {
+    const result = sanitizeBoxes(
+      [
+        { x: -50, y: -50, width: 10, height: 10 },
+        { x: 90, y: 90, width: 30, height: 30 },
+      ],
+      { width: 100, height: 100 },
+    );
+    expect(result).toEqual([{ x: 90, y: 90, width: 10, height: 10 }]);
+  });
+
+  it("空配列を渡すと空配列を返す", () => {
+    expect(sanitizeBoxes([], AMPLE_BOUNDS)).toEqual([]);
   });
 });

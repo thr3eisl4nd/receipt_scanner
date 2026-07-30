@@ -1,7 +1,21 @@
-import type { OcrEngine, OcrLine } from "./engine";
+import type { OcrBox, OcrEngine, OcrLine } from "./engine";
 import { PaddleOcrService } from "ppu-paddle-ocr/web";
 import { env as ortEnv } from "onnxruntime-web";
-import { mapToOcrLines } from "./mapRecognitionResult";
+import { mapToOcrLines, sanitizeBoxes } from "./mapRecognitionResult";
+
+/**
+ * `detect()`(検出専用API、v1.3)呼び出し時のpadding上書き値。
+ *
+ * `ppu-paddle-ocr`の`DetectionOptions`既定値(paddingVertical:0.4/paddingHorizontal:0.6)は
+ * 認識モデルへ十分なマージンを与えるための値で、認識と組み合わせて使う分には妥当だが、
+ * レイアウト検出(XY-cut)用途では box 同士を過剰に肥大化させ、本来別の印字行・別の
+ * レシートであるboxを誤って隣接/重複させてしまう(検証スパイクで実測: 既定値のままだと
+ * 模擬12枚中2/12(16.7%)しか正解せず誤結合が多発、この上書き値で10/12(83.3%)・誤結合0件。
+ * 詳細は`.superpowers/sdd/v13-spike.md` §1.2参照)。スパイクの結論通り、認識用の
+ * `recognize()`呼び出しには影響させず、`detect()`呼び出しにのみ適用する。
+ */
+const DETECT_PADDING_VERTICAL = 0.1;
+const DETECT_PADDING_HORIZONTAL = 0.15;
 
 /** モデル配置ディレクトリ(自サイト同梱、public/models/ を BASE_URL 基準で参照)。 */
 const MODEL_BASE_URL = `${import.meta.env.BASE_URL}models/`;
@@ -78,6 +92,18 @@ export function createPpuPaddleEngine(): OcrEngine {
       // アプリなので、常時noCacheにして再試行が確実に別画像として処理されるようにする。
       const result = await service.recognize(image, { flatten: true, noCache: true });
       return mapToOcrLines(result.results, { width: image.width, height: image.height });
+    },
+
+    async detect(image: HTMLCanvasElement): Promise<OcrBox[]> {
+      if (!service) {
+        throw new Error("createPpuPaddleEngine: initialize() must be called before detect()");
+      }
+      // スパイクで確定したpadding上書き(§16.2、上記定数のdocコメント参照)。
+      const result = await service.detect(image, {
+        paddingVertical: DETECT_PADDING_VERTICAL,
+        paddingHorizontal: DETECT_PADDING_HORIZONTAL,
+      });
+      return sanitizeBoxes(result.boxes, { width: image.width, height: image.height });
     },
 
     async destroy(): Promise<void> {
