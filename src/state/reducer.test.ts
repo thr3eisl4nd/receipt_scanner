@@ -5,6 +5,7 @@ import {
   buildSummaryText,
   toPersisted,
   fromPersisted,
+  nextReceiptLabel,
   type AppState,
   type RowPatch,
 } from "./reducer";
@@ -576,5 +577,114 @@ describe("toPersisted/fromPersisted", () => {
         candidates: [],
       },
     ]);
+  });
+});
+
+describe("replacePendingRow (v1.3 §16.4: プレースホルダ行→N行への原子的置換)", () => {
+  test("プレースホルダ行を元の位置でN行に置換し、ラベルを置換時に採番する", () => {
+    let s = reducer(base, {
+      type: "addRows",
+      rows: [
+        row({ id: "before", label: "レシート 1", processing: false }),
+        row({ id: "placeholder", label: "解析中…", processing: true }),
+      ],
+    });
+    s = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "placeholder",
+      newRows: [
+        { id: "r1", payerId: HUSBAND_ID },
+        { id: "r2", payerId: WIFE_ID },
+      ],
+    });
+
+    // 元の位置(indexへ)にそのまま挿入され、前後の行の並びは変わらない
+    expect(s.rows.map((r) => r.id)).toEqual(["before", "r1", "r2"]);
+    expect(s.rows[1]).toMatchObject({
+      id: "r1",
+      payerId: HUSBAND_ID,
+      label: "レシート 2",
+      status: "failed",
+      source: "ocr",
+      amountYen: null,
+      processing: true,
+    });
+    expect(s.rows[2]).toMatchObject({ id: "r2", payerId: WIFE_ID, label: "レシート 3" });
+  });
+
+  test("placeholderIdが既に存在しない(削除済み)場合は何もしない(no-op)", () => {
+    const s = reducer(base, { type: "addRows", rows: [row({ id: "a" })] });
+    const next = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "missing",
+      newRows: [{ id: "r1", payerId: HUSBAND_ID }],
+    });
+    expect(next).toBe(s);
+  });
+
+  test("processing:falseの行(=既に手修正済み等)は対象外で置換しない", () => {
+    const s = reducer(base, {
+      type: "addRows",
+      rows: [row({ id: "placeholder", label: "解析中…", processing: false })],
+    });
+    const next = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "placeholder",
+      newRows: [{ id: "r1", payerId: HUSBAND_ID }],
+    });
+    expect(next).toBe(s);
+    expect(next.rows.map((r) => r.id)).toEqual(["placeholder"]);
+  });
+
+  test("採番衝突なし: 既存の最大番号より後から連番になり、複数回の置換を経ても重複しない", () => {
+    let s = reducer(base, {
+      type: "addRows",
+      rows: [
+        row({ id: "existing", label: "レシート 5", processing: false }),
+        row({ id: "ph1", label: "解析中…", processing: true }),
+      ],
+    });
+    s = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "ph1",
+      newRows: [
+        { id: "r1", payerId: HUSBAND_ID },
+        { id: "r2", payerId: HUSBAND_ID },
+      ],
+    });
+    expect(s.rows.map((r) => r.label)).toEqual(["レシート 5", "レシート 6", "レシート 7"]);
+
+    // 2回目の置換(別の写真)も既存ラベルと衝突しない
+    s = reducer(s, { type: "addRows", rows: [row({ id: "ph2", label: "解析中…", processing: true })] });
+    s = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "ph2",
+      newRows: [{ id: "r3", payerId: HUSBAND_ID }],
+    });
+    const labels = s.rows.map((r) => r.label);
+    expect(labels).toEqual(["レシート 5", "レシート 6", "レシート 7", "レシート 8"]);
+    expect(new Set(labels).size).toBe(labels.length); // 重複なし
+  });
+
+  test("payerIdがpeopleに存在しないnewRowsエントリは除外する(参照整合性)", () => {
+    const s = reducer(base, {
+      type: "addRows",
+      rows: [row({ id: "placeholder", label: "解析中…", processing: true })],
+    });
+    const next = reducer(s, {
+      type: "replacePendingRow",
+      placeholderId: "placeholder",
+      newRows: [
+        { id: "r1", payerId: HUSBAND_ID },
+        { id: "bad", payerId: "unknown-person" },
+      ],
+    });
+    expect(next.rows.map((r) => r.id)).toEqual(["r1"]);
+  });
+
+  test("nextReceiptLabelは既存ラベルの最大値の続きから採番する(移設後の単体テスト)", () => {
+    const labelFor = nextReceiptLabel([row({ label: "レシート 2" }), row({ label: "レシート 7" }), row({ label: "手動行" })]);
+    expect(labelFor(1)).toBe("レシート 8");
+    expect(labelFor(2)).toBe("レシート 9");
   });
 });

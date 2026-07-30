@@ -16,7 +16,11 @@ export type Action =
   | { type: "setSaveFailed"; value: boolean }
   | { type: "addPerson" }
   | { type: "renamePerson"; id: string; name: string }
-  | { type: "removePerson"; id: string };
+  | { type: "removePerson"; id: string }
+  // v1.3(§16.4): 写真1枚のプレースホルダ行(placeholderId)を、パス1(検出)完了時に
+  // N行(領域の数だけ)へ原子的に置換する。ラベル(「レシート N」)の採番はこの置換時に
+  // 行う(newRows自体は採番前のid/payerIdのみ持つ)。
+  | { type: "replacePendingRow"; placeholderId: string; newRows: Array<{ id: string; payerId: string }> };
 
 /** 円整数として妥当か(null許容)。NaN/Infinity/小数を拒否する。 */
 function isYenAmount(value: number | null): boolean {
@@ -139,9 +143,59 @@ export function reducer(state: AppState, action: Action): AppState {
       if (state.rows.some((r) => r.payerId === action.id)) return state;
       return { ...state, people: state.people.filter((p) => p.id !== action.id) };
     }
+    // v1.3(§16.4): プレースホルダ行(placeholderId)をN行へ原子的に置換する。
+    // - placeholderIdが既に存在しない場合(ユーザーが処理中に行を削除した等)はno-op。
+    // - processing中の行のみ対象(ユーザーが既に手修正して processing:false になった行は
+    //   置換しない。手修正を無警告で消し去らないため、applyOcrResultと同じ考え方)。
+    // - 元の行の位置(index)へそのままN行を挿入する(一覧内の並び順を保つ)。
+    // - ラベル(「レシート N」)はこの置換時に、プレースホルダを除いた現在のrowsから
+    //   採番する(重複・衝突なし。プレースホルダ自身が既に番号を持っていた場合でも、
+    //   それを取り除いた状態から採番し直すため同じ番号から連番になる)。
+    case "replacePendingRow": {
+      const idx = state.rows.findIndex((r) => r.id === action.placeholderId);
+      if (idx === -1) return state;
+      if (!state.rows[idx].processing) return state;
+
+      const rowsWithoutPlaceholder = [...state.rows.slice(0, idx), ...state.rows.slice(idx + 1)];
+      const labelFor = nextReceiptLabel(rowsWithoutPlaceholder);
+      const newRows: Row[] = action.newRows
+        .filter((nr) => hasPayer(state.people, nr.payerId))
+        .map((nr, i) => ({
+          id: nr.id,
+          payerId: nr.payerId,
+          amountYen: null,
+          label: labelFor(i + 1),
+          status: "failed",
+          source: "ocr",
+          candidates: [],
+          processing: true,
+        }));
+
+      return {
+        ...state,
+        rows: [...state.rows.slice(0, idx), ...newRows, ...state.rows.slice(idx + 1)],
+      };
+    }
     default:
       return assertNever(action);
   }
+}
+
+const RECEIPT_LABEL_RE = /^レシート (\d+)$/;
+
+/**
+ * 次の自動採番ラベルの番号を、現在の行群のラベルから導出する(v1.1「Task 12」・
+ * v1.3「§16.4 採番は置換時に行う」で共通利用)。モジュールスコープの可変カウンタだと
+ * ページ再読み込みのたびに1へリセットされ、保存済みの「レシート 3」等と新規行が
+ * 番号衝突する(Codexレビュー指摘)。渡された行群から毎回導出することで、再読み込み後・
+ * `replacePendingRow`による置換後のいずれでも継続した採番になる。
+ */
+export function nextReceiptLabel(rows: Row[]): (offset: number) => string {
+  const max = rows.reduce((acc, r) => {
+    const m = RECEIPT_LABEL_RE.exec(r.label);
+    return m ? Math.max(acc, Number(m[1])) : acc;
+  }, 0);
+  return (offset: number) => `レシート ${max + offset}`;
 }
 
 export type PersonTotal = { personId: string; name: string; colorIndex: number; amountYen: number; count: number };
