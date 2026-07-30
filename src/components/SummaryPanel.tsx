@@ -66,38 +66,71 @@ export function SummaryPanel({ state, onNewMonth }: Props) {
     }
   };
 
+  // 折りたたみ(設計ドキュメント§17.9): スマホ・タブレット(<1024px、画面下部固定)で
+  // 「合計行だけのコンパクト表示⇄展開」を可能にするトグル。既存の動作(常時全内容表示)
+  // との後方互換を優先し、初期状態は展開のまま(expanded:true)にする — 折りたたみは
+  // 追加のユーザー操作であり、デフォルトの見え方は変えない。>=1024pxのstickyパネルでは
+  // CSS側で`.summary-body`を常に表示させ、トグル自体も非表示にする(実装はCSSのみ、
+  // JS側でbreakpointを分岐させない)。
+  const [expanded, setExpanded] = useState(true);
+  // 「合計行」に出す単一の金額(設計ドキュメント§17.9: 人数に関わらず必ず1つ定まる値として
+  // 全員の合計を使う)。清算額(差額÷2)ではなく、単純な合計なので§2/§14.3の
+  // 「折半ではない」方針とは無関係(表示専用の集計)。
+  const grandTotal = t.totals.reduce((sum, p) => sum + p.amountYen, 0);
+
   return (
-    <section ref={panelRef} className="summary-panel" aria-label="集計">
-      {/* レシートの合計欄の様式(設計ドキュメント§15.4): 上に二重線(border-top:double、
-          CSSのみ)、「合 計」の印字風ラベル(装飾のみ・aria-hidden)。 */}
-      <p className="summary-heading" aria-hidden="true">合 計</p>
-      <div className="summary-totals">
-        {t.totals.map((total) => (
-          <div key={total.personId} className="summary-line">
-            {/* 人別テーマカラーのドット+蛍光マーカー風ハイライトは装飾のみ(aria-hidden)。
-                色だけに頼らず名前テキストを併記する(既存a11y方針、設計ドキュメント§14.1・§15.4)。 */}
-            <span className={`summary-person ${personColorClass(total.colorIndex)}`}>
-              <span className="person-dot" aria-hidden="true" />
-              {total.name}
-            </span>
-            <b className="summary-amount">{yen(total.amountYen)}円</b>
+    <section ref={panelRef} className={`summary-panel${expanded ? " is-expanded" : ""}`} aria-label="集計">
+      {/* 折りたたみトグル(スマホ・タブレットのみ、CSSで>=1024pxは非表示)。合計行だけの
+          コンパクト表示を兼ねる(設計ドキュメント§17.9)。 */}
+      <button
+        type="button"
+        className="summary-toggle"
+        aria-expanded={expanded}
+        aria-controls="summary-body"
+        aria-label={expanded ? "集計を折りたたむ" : "集計を展開"}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="summary-toggle-label" aria-hidden="true">合計</span>
+        <b key={grandTotal} className="summary-toggle-amount">{yen(grandTotal)}円</b>
+        {t.unconfirmed > 0 && <span className="summary-toggle-flag" aria-hidden="true" />}
+        <span className="summary-chevron" aria-hidden="true">{expanded ? "︿" : "﹀"}</span>
+      </button>
+      <div id="summary-body" className="summary-body" hidden={!expanded}>
+        <div className="summary-body-inner">
+          {/* 「合計」ラベルは折りたたみトグル側に既に出ているため、本文側で重複表示
+              しない(設計ドキュメント§17.9)。 */}
+          <div className="summary-totals">
+            {t.totals.map((total) => (
+              <div key={total.personId} className="summary-line">
+                {/* 人別テーマカラーのドット+ソフトチップは装飾のみ(aria-hidden)。
+                    色だけに頼らず名前テキストを併記する(既存a11y方針、設計ドキュメント§17.3)。 */}
+                <span className={`summary-person ${personColorClass(total.colorIndex)}`}>
+                  <span className="person-dot" aria-hidden="true" />
+                  {total.name}
+                </span>
+                {/* 合計金額の更新時の極小フェード/シフト(設計ドキュメント§17.10)。
+                    keyを金額値にすることでReactが要素を再マウントし、CSSのマウント
+                    アニメーション(amount-update-in)が更新のたびに再生される。 */}
+                <b key={total.amountYen} className="summary-amount">{yen(total.amountYen)}円</b>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      {/* ちょうど2人のときのみ差額行を表示する(1人・3人以上では非表示、設計ドキュメント§14.3)。 */}
-      {direction !== null && <div className="delta">{direction}</div>}
-      {/* role="status"は付けない: App側のOCR進捗表示(role="status")と同一ロールで
-          同時に存在しうると、アクセシブルネーム無しの複数status領域になり
-          スクリーンリーダー・テスト双方から曖昧になる(Codexレビュー指摘)。この警告は
-          ライブ更新の通知ではなく状態表示なので、通常のテキストで十分。 */}
-      {t.unconfirmed > 0 && <div className="warn">⚠ 未確認 {t.unconfirmed}件</div>}
-      <div className="panel-actions">
-        <button type="button" onClick={copy}>
-          {copied ? "コピーしました" : "結果をコピー"}
-        </button>
-        <button type="button" onClick={onNewMonth}>
-          新しい月を始める
-        </button>
+          {/* ちょうど2人のときのみ差額行を表示する(1人・3人以上では非表示、設計ドキュメント§14.3)。 */}
+          {direction !== null && <div className="delta">{direction}</div>}
+          {/* role="status"は付けない: App側のOCR進捗表示(role="status")と同一ロールで
+              同時に存在しうると、アクセシブルネーム無しの複数status領域になり
+              スクリーンリーダー・テスト双方から曖昧になる(Codexレビュー指摘)。この警告は
+              ライブ更新の通知ではなく状態表示なので、通常のテキストで十分。 */}
+          {t.unconfirmed > 0 && <div className="warn">⚠ 未確認 {t.unconfirmed}件</div>}
+          <div className="panel-actions">
+            <button type="button" className={copied ? "is-copied" : undefined} onClick={copy}>
+              {copied ? "コピーしました" : "結果をコピー"}
+            </button>
+            <button type="button" onClick={onNewMonth}>
+              新しい月を始める
+            </button>
+          </div>
+        </div>
       </div>
     </section>
   );

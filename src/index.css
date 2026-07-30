@@ -1,74 +1,60 @@
 /* ==========================================================================
-   v1.2 レシートモチーフ・デザインシステム(設計ドキュメント§15)
-   アプリ全体を「レジから印字された1枚の感熱紙レシート」に見立てる。
-   §14.4(クリーム+ソフトグリーンのカードUI)を全面置換するが、アクセシビリティ・
-   タップ領域・ライトテーマ固定・iOS対策等の品質要件(§15.6)はすべて維持する。
+   v1.4 quiet luxuryリデザイン(設計ドキュメント§17)
+   v1.2の「レジ台の上の感熱紙レシート」というコンセプトは維持しつつ、装飾を大きく
+   減らし、余白・質感・タイポ・奥行きで上質感を出す(v14ブリーフ: quiet luxury /
+   editorial minimalism / a beautiful tool, not a gimmicky theme)。
+   タップ領域・コントラスト・ライトテーマ固定・iOS対策・reduced-motion等の品質要件は
+   すべて維持する。
    ========================================================================== */
 :root {
-  /* v1はダークモード対応をスコープ外とし、明示的にライトテーマへ固定する
-     (Codexレビュー指摘I7)。以後のリデザインでもこの制約は変えない。 */
+  /* v1はダークモード対応をスコープ外とし、明示的にライトテーマへ固定する。 */
   color-scheme: light;
 
-  /* デザイントークン(設計ドキュメント§15.2そのまま)。 */
-  --paper: #fcfbf7; /* 感熱紙 */
-  --ink: #26241f; /* サーマル印字の黒 */
-  --ink-faded: #6b675e; /* 薄れた印字 */
-  --stamp: #c7402d; /* 朱肉・レジの赤(要確認/失敗/返品/削除系)。枠線・塗り潰しに使う */
-  /* 朱色文字をそのまま地の紙に置くとAA(4.5:1)を僅かに上回る程度(4.83:1)で余裕が
-     ないため、文字色専用にわずかに暗くした近似色を用意する(§15.6でAA検証必須、
-     仕様の色は起点であり微調整は裁量)。枠線・塗り潰し面には引き続き`--stamp`を使う。 */
-  --stamp-text: #ac3523; /* 紙の上のテキスト用(6.17:1) */
-  --counter: #33413a; /* 背景=レジ台の深いフェルトグリーン */
-  --rule-dashed: 1px dashed color-mix(in srgb, var(--ink) 35%, transparent); /* ミシン目 */
+  /* デザイントークン(設計ドキュメント§17.2)。ブリーフの基準色を起点に、AAコントラスト
+     実測(下記コメント)にもとづき ink-faded と赤文字専用色のみ微調整している。実測値は
+     `.superpowers/sdd/task-17-report.md` に一覧化。 */
+  --paper: #f4f0e7; /* 感熱紙(暖かいオフホワイト) */
+  --ink: #171715; /* メイン文字 */
+  /* ブリーフの--ink-faded(#77736A)は紙の上で4.15:1とAA(4.5:1)にわずかに届かないため、
+     inkへ6%寄せて4.53:1まで調整。 */
+  --ink-faded: #716d65;
+  --stamp: #d25541; /* アクセント赤(枠線・ドット・低アルファ塗りなど非文字用途) */
+  /* stampをそのまま紙の上の文字色に使うと3.61:1でAA未達のため、文字専用に暗くした
+     近似色を用意する(紙の上で4.61:1)。枠線・ドット・フォーカスリングには引き続き
+     `--stamp`を使う。 */
+  --stamp-text: #b44b3a;
+  --counter: #171c19; /* 背景(黒に近い深緑) */
 
-  /* 数字・金額・月表示・進捗カウント用(設計ドキュメント§15.3)。追加フォントDLは
-     一切行わず、システムのモノスペース総称のみを使う。 */
+  --rule-hairline: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); /* 行区切り等の控えめな罫線 */
+  --rule-dashed: 1.5px dashed var(--stamp); /* 破線は要所(領域分割の回復導線)のみに残す */
+
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
 
-  --radius-print: 4px; /* 印刷物らしい控えめな角丸(カードの丸みは使わない) */
-  --radius-pill: 999px; /* 判子・スタンプ系バッジのみに使う */
-  --shadow-panel: 0 -6px 16px rgba(38, 36, 31, 0.28);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
+  --shadow-paper: 0 24px 48px -28px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.12);
+  --shadow-panel: 0 -8px 24px rgba(0, 0, 0, 0.16);
 
-  /* 人別テーマカラー(設計ドキュメント§14.1・§15.4)。ドット・枠線用の落ち着いた8色は
-     維持しつつ、人名の背景に敷く「蛍光マーカー風ハイライト」用の生RGBを追加する。
-     マーカー色はいずれもアルファ0.55で紙(#FCFBF7)に重ねた上に`--ink`の文字を置いた
-     状態で最低7.97:1(実測)のコントラストがあり、WCAG AAの4.5:1を大きく上回る。 */
-  --person-color-0: #5b8266; /* グリーン */
-  --person-color-1: #c1694f; /* テラコッタ */
-  --person-color-2: #5b7c99; /* ブルーグレー */
-  --person-color-3: #b98900; /* マスタード */
-  --person-color-4: #8a5a8c; /* プラム */
-  --person-color-5: #3f8c82; /* ティール */
-  --person-color-6: #b56576; /* ダスティローズ */
-  --person-color-7: #7a705c; /* スレート */
+  /* 人別テーマカラー(設計ドキュメント§17.3)。彩度を抑えた上品なパレットへ再設計し、
+     蛍光マーカー塗りは廃止する。ドットは装飾用の落ち着いた中彩度色、チップ背景は
+     紙へ16%だけ混ぜた極薄トーン(文字は常に--ink、実測13:1超なのでどの色でもAAを
+     大きく上回る)。 */
+  --person-color-0: #6b7f6c; /* セージ */
+  --person-color-1: #b36a55; /* テラコッタ */
+  --person-color-2: #6c7b8b; /* ブルーグレー */
+  --person-color-3: #9c7a3c; /* オーカー */
+  --person-color-4: #8b6b84; /* プラム */
+  --person-color-5: #57807c; /* ティール */
+  --person-color-6: #a97073; /* ダスティローズ */
+  --person-color-7: #7a756a; /* スレート */
 
-  --marker-0-rgb: 143, 232, 74; /* 蛍光ライム */
-  --marker-1-rgb: 255, 138, 76; /* 蛍光オレンジ */
-  --marker-2-rgb: 92, 194, 255; /* 蛍光スカイ */
-  --marker-3-rgb: 255, 226, 74; /* 蛍光イエロー */
-  --marker-4-rgb: 227, 107, 255; /* 蛍光マゼンタ */
-  --marker-5-rgb: 62, 230, 199; /* 蛍光アクア */
-  --marker-6-rgb: 255, 111, 165; /* 蛍光ピンク */
-  --marker-7-rgb: 140, 155, 255; /* 蛍光ペリウィンクル */
-
-  /* 紙のごく薄いテクスチャ(Codexレビュー v1.2指摘I3で置換)。旧実装はインラインSVGの
-     feTurbulence+feColorMatrix(定数RGB)だったが、feColorMatrixの係数がすべて定数
-     だったためfeTurbulenceのノイズ値が一切出力に残らず、実質「一様な5%濃色
-     オーバーレイ」でしかなく§15.2の紙質表現を満たしていなかった。加えてdata URI内
-     SVG filterはSafariで未解決の互換性問題がある(WebKit bug 104169)。静的な
-     radial-gradientの小タイルを敷き詰める方式に置き換え、Mobile SafariのSVG
-     フィルタ問題とfeTurbulenceの描画コストを両方避ける。 */
+  /* 紙のごく薄いテクスチャ(v1.2から継続。static radial-gradientでSafariのSVG filter
+     互換性問題を回避)。 */
   --paper-texture:
-    radial-gradient(
-      circle at 20% 30%,
-      rgb(38 36 31 / 2.5%) 0 0.5px,
-      transparent 0.7px
-    ),
-    radial-gradient(
-      circle at 70% 65%,
-      rgb(38 36 31 / 1.8%) 0 0.4px,
-      transparent 0.65px
-    );
+    radial-gradient(circle at 20% 30%, rgb(23 23 21 / 2.2%) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 70% 65%, rgb(23 23 21 / 1.6%) 0 0.4px, transparent 0.65px);
 
   color: var(--ink);
   background: var(--counter);
@@ -76,30 +62,30 @@
 
 * { box-sizing: border-box; }
 
-/* ページ背景はレジ台(深緑)固定。ジグザグエッジ・回転したバッジ・テクスチャで
-   横スクロールが発生しないよう明示的に抑止する(実装指示: overflow管理)。 */
 html, body {
   background: var(--counter);
   overflow-x: hidden;
 }
 
 body {
-  font-family: -apple-system, "Hiragino Sans", sans-serif;
+  font-family: var(--font-sans);
   margin: 0;
   color: var(--ink);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* タップ操作の質(web-design-guidelines監査、§15.7): ダブルタップズームの遅延を
-   避け、既定のグレーのタップハイライトが「印刷物」の質感と衝突しないようにする。 */
 button, a, input, select, [role="button"] {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
 }
 
-/* 数字・金額・月表示・進捗カウントはモノスペース+桁揃え+太字(設計ドキュメント§15.3)。 */
+/* 数字・金額・月表示・進捗カウントはモノスペース+桁揃え(設計ドキュメント§17.4:
+   タイポ階層のうち最重要=金額)。 */
 .amount,
 .month,
 .summary-amount,
+.summary-toggle-amount,
 .delta,
 .candidates button,
 .amount-editor input,
@@ -109,105 +95,111 @@ button, a, input, select, [role="button"] {
 }
 
 /* ---------------------------------------------------------------------
-   全体レイアウト: レジ台(counter)の上に浮かぶ「紙」(paper)。
+   全体レイアウト。ブレークポイント(設計ドキュメント§17.5):
+   <768px スマホ / 768-1023px タブレット(余白拡大) / >=1024px 2カラム
+   (紙~620px + sticky集計~300px、全体max 1160px中央)。
    --------------------------------------------------------------------- */
 main {
   max-width: 640px;
   margin: 0 auto;
 }
 
-/* 「紙」本体。上下端はジグザグのミシン目エッジ(CSS clip-pathの三角連続、画像不使用、
-   設計ドキュメント§15.2)。パーセンテージのx座標で幅に追従するため、どの画面幅でも
-   横スクロールを起こさない。上下に十分な内側パディングを確保し、ジグザグの凹み(8px)が
-   実コンテンツを削らないようにしている。 */
+@media (min-width: 768px) {
+  main { max-width: 720px; }
+}
+
+@media (min-width: 1024px) {
+  main {
+    max-width: 1160px;
+    display: grid;
+    grid-template-columns: minmax(0, 620px) minmax(280px, 320px);
+    align-items: start;
+    gap: 40px;
+    padding: 40px 32px;
+  }
+}
+
+/* 「紙」本体。上端のみ浅いジグザグ(設計ドキュメント§17.6: 装飾の抑制。深さ4pxで
+   ミシン目の記憶は残しつつ控えめに)、下端は直線+ソフトシャドウで奥行きを出す。 */
 .receipt-paper {
   position: relative;
   background-color: var(--paper);
   background-image: var(--paper-texture);
   background-size: 7px 9px, 11px 13px;
+  box-shadow: var(--shadow-paper);
   clip-path: polygon(
-    0% 8px, 4.167% 0px, 8.333% 8px, 12.5% 0px, 16.667% 8px, 20.833% 0px, 25% 8px, 29.167% 0px,
-    33.333% 8px, 37.5% 0px, 41.667% 8px, 45.833% 0px, 50% 8px, 54.167% 0px, 58.333% 8px, 62.5% 0px,
-    66.667% 8px, 70.833% 0px, 75% 8px, 79.167% 0px, 83.333% 8px, 87.5% 0px, 91.667% 8px, 95.833% 0px,
-    100% 8px,
-    100% calc(100% - 8px), 95.833% 100%, 91.667% calc(100% - 8px), 87.5% 100%, 83.333% calc(100% - 8px),
-    79.167% 100%, 75% calc(100% - 8px), 70.833% 100%, 66.667% calc(100% - 8px), 62.5% 100%,
-    58.333% calc(100% - 8px), 54.167% 100%, 50% calc(100% - 8px), 45.833% 100%, 41.667% calc(100% - 8px),
-    37.5% 100%, 33.333% calc(100% - 8px), 29.167% 100%, 25% calc(100% - 8px), 20.833% 100%,
-    16.667% calc(100% - 8px), 12.5% 100%, 8.333% calc(100% - 8px), 4.167% 100%,
-    0% calc(100% - 8px)
+    0% 4px, 4.167% 0px, 8.333% 4px, 12.5% 0px, 16.667% 4px, 20.833% 0px, 25% 4px, 29.167% 0px,
+    33.333% 4px, 37.5% 0px, 41.667% 4px, 45.833% 0px, 50% 4px, 54.167% 0px, 58.333% 4px, 62.5% 0px,
+    66.667% 4px, 70.833% 0px, 75% 4px, 79.167% 0px, 83.333% 4px, 87.5% 0px, 91.667% 4px, 95.833% 0px,
+    100% 4px,
+    100% 100%, 0% 100%
   );
-  /* 画面下部固定の`.summary-panel`が本文最終行・手動追加フォームを隠さないよう、
-     その実高を予約する(Codexレビュー v1.2再指摘I2)。サマリーは「1人1行」で人数・
-     名前の長さに応じて可変高になるため、固定230pxの予約では5～8人や長い名前で
-     パネルが230pxを超え、最終コンテンツが隠れてスクロールしても表示できなくなる
-     退行があった。`--summary-panel-height`はSummaryPanel側のResizeObserverが
-     実測値(safe-area-inset-bottomを含むボーダーボックス高)を反映するCSS変数。
-     JS実行前・ResizeObserver未対応環境向けのフォールバックのみ、旧来の230px相当
-     (safe-area分を含む)を使う。 */
-  padding: 22px 16px calc(var(--summary-panel-height, calc(230px + env(safe-area-inset-bottom))) + 16px);
+  /* 画面下部固定の`.summary-panel`(スマホ・タブレット)が本文最終行・手動追加フォームを
+     隠さないよう、その実高を予約する。SummaryPanel側のResizeObserverが実測値を
+     `--summary-panel-height`へ反映する(v1.2から継続)。 */
+  padding: 28px 20px calc(var(--summary-panel-height, calc(230px + env(safe-area-inset-bottom))) + 20px);
 }
 
-/* レシートの店名ヘッダー様式(設計ドキュメント§15.3): モノスペース・中央寄せ・
-   字間広め、上下に「＊ ＊ ＊」の装飾行(装飾のみ・aria-hidden)。 */
+@media (min-width: 768px) {
+  .receipt-paper { padding: 36px 40px calc(var(--summary-panel-height, calc(230px + env(safe-area-inset-bottom))) + 24px); }
+}
+
+@media (min-width: 1024px) {
+  /* 2カラムでは集計がstickyな別カラムに移るため、下部予約は不要(設計ドキュメント§17.5)。 */
+  .receipt-paper { padding: 40px 44px; }
+}
+
+/* レシートの店名ヘッダー様式: モノスペース・中央寄せ。「＊ ＊ ＊」装飾は廃止し、
+   字間と余白で品を出す(設計ドキュメント§17.4)。 */
 .receipt-header {
   text-align: center;
-  margin: 0 0 16px;
-}
-.receipt-header .receipt-deco {
-  margin: 0 0 4px;
-  color: var(--ink-faded);
-  letter-spacing: 0.5em;
-  font-size: 13px;
-  user-select: none;
+  margin: 0 0 24px;
 }
 .receipt-header h1 {
-  margin: 4px 0;
+  margin: 0;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   align-items: baseline;
-  gap: 8px;
+  gap: 10px;
   font-family: var(--font-mono);
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  font-size: 18px;
-  line-height: 1.5;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--ink);
 }
 .month {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
-  border: 1.5px solid var(--ink);
-  border-radius: var(--radius-print);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-faded);
+  border: 1px solid color-mix(in srgb, var(--ink) 25%, transparent);
+  border-radius: var(--radius-sm);
   padding: 2px 8px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
 }
 
-/* 切り取り線装飾(設計ドキュメント§15.4: 「✂ ─ ─ ─ ─」風、装飾のみ・aria-hidden)。
-   セクション間の区切りに使う。行区切り(ミシン目)は`.receipt-row`側で別途扱う。 */
-.tear-line {
-  text-align: center;
-  color: var(--ink-faded);
-  letter-spacing: 0.2em;
-  font-size: 13px;
-  margin: 18px 0;
-  user-select: none;
+/* セクション区切り(設計ドキュメント§17.6): 破線・ハサミ演出は廃止し、
+   低アルファのヘアライン1本にする(要所のみ)。装飾のみ・aria-hidden。 */
+.section-divider {
+  border: none;
+  border-top: var(--rule-hairline);
+  margin: 20px 0;
 }
 
 /* ---------------------------------------------------------------------
-   人の管理(設計ドキュメント§14.1・§15.4)。判子ではなく「紙に留めた付箋/タグ」風の
-   控えめな破線タグにし、名前部分には蛍光マーカー風ハイライトを敷く。
+   人の管理(設計ドキュメント§17.3)。蛍光マーカーは廃止し、控えめな色ドット+
+   淡いソフトチップ(低彩度背景)にする。
    --------------------------------------------------------------------- */
 .people-manager {
-  padding-bottom: 14px;
-  margin-bottom: 14px;
-  border-bottom: var(--rule-dashed);
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: var(--rule-hairline);
 }
 .people-list {
   list-style: none;
   padding: 0;
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
@@ -218,136 +210,159 @@ main {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  border: 1px dashed color-mix(in srgb, var(--ink) 45%, transparent);
-  border-radius: var(--radius-print);
+  background: color-mix(in srgb, var(--ink) 4%, var(--paper));
+  border-radius: var(--radius-md);
   padding: 4px 8px 4px 10px;
 }
-.person-item.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
-.person-item.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
-.person-item.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
-.person-item.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
-.person-item.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
-.person-item.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
-.person-item.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
-.person-item.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
+.person-item.person-color-0 { --person-accent: var(--person-color-0); --person-soft: color-mix(in srgb, var(--person-color-0) 16%, var(--paper)); }
+.person-item.person-color-1 { --person-accent: var(--person-color-1); --person-soft: color-mix(in srgb, var(--person-color-1) 16%, var(--paper)); }
+.person-item.person-color-2 { --person-accent: var(--person-color-2); --person-soft: color-mix(in srgb, var(--person-color-2) 16%, var(--paper)); }
+.person-item.person-color-3 { --person-accent: var(--person-color-3); --person-soft: color-mix(in srgb, var(--person-color-3) 16%, var(--paper)); }
+.person-item.person-color-4 { --person-accent: var(--person-color-4); --person-soft: color-mix(in srgb, var(--person-color-4) 16%, var(--paper)); }
+.person-item.person-color-5 { --person-accent: var(--person-color-5); --person-soft: color-mix(in srgb, var(--person-color-5) 16%, var(--paper)); }
+.person-item.person-color-6 { --person-accent: var(--person-color-6); --person-soft: color-mix(in srgb, var(--person-color-6) 16%, var(--paper)); }
+.person-item.person-color-7 { --person-accent: var(--person-color-7); --person-soft: color-mix(in srgb, var(--person-color-7) 16%, var(--paper)); }
 
 /* 色の小さなドット(装飾のみ・aria-hidden)。色だけに頼らず、常に人の名前テキストと
    併記される(既存a11y方針)。 */
 .person-dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--person-accent, var(--ink));
   flex: none;
 }
 
-/* 人名の背景に半透明の蛍光マーカー塗り(設計ドキュメント§15.4)。文字色は常に
-   `--ink`(どのマーカー色に対しても実測7.97:1以上)にして、色相を問わずAAを確保する。 */
 .person-name {
   min-height: 44px;
   font-size: 15px;
-  background: var(--person-marker, transparent);
+  background: var(--person-soft, transparent);
   border: none;
-  border-radius: 2px 8px 4px 8px;
+  border-radius: var(--radius-sm);
   padding: 4px 8px;
   color: var(--ink);
-  font-weight: 700;
-  /* 人の名前は自由入力のため、非常に長い/区切りのない文字列でも自身の枠内で
-     折り返す(web-design-guidelines監査、§15.7: 長いコンテンツの処理)。 */
+  font-weight: 600;
   overflow-wrap: anywhere;
   max-width: 100%;
 }
-/* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大する
-   (.amount-editor inputと同じ理由)。 */
 .person-name-editor input {
   min-height: 44px;
   font-size: 16px;
   border: 1.5px solid var(--ink);
-  border-radius: var(--radius-print);
+  border-radius: var(--radius-sm);
   padding: 4px 8px;
   font-family: inherit;
 }
 .person-name-error { color: var(--stamp-text); margin: 0; font-size: 13px; width: 100%; }
 .person-item button[aria-label$="を削除"] {
   min-height: 44px; min-width: 44px; padding: 4px 10px;
-  border: 1.5px solid var(--stamp); border-radius: var(--radius-print);
-  background: var(--paper); color: var(--ink);
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); border-radius: var(--radius-sm);
+  background: transparent; color: var(--ink-faded); font-weight: 500;
 }
-.person-item button[aria-label$="を削除"]:disabled { border-color: color-mix(in srgb, var(--ink) 35%, transparent); color: var(--ink-faded); }
+.person-item button[aria-label$="を削除"]:disabled { opacity: 0.5; }
 .person-delete-reason { color: var(--ink-faded); font-size: 13px; }
 
-/* 「+ 人を追加」は印刷物らしい破線の枠線ボタンにする(設計ドキュメント§15.4)。 */
 .people-manager > button {
   min-height: 44px;
   padding: 8px 16px;
-  border: 1.5px dashed var(--ink);
-  border-radius: var(--radius-print);
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--ink);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 /* ---------------------------------------------------------------------
-   取り込みカード(設計ドキュメント§15.4: file入力ボタンはink 1.5px solid・角丸4px)。
+   取り込み導線(設計ドキュメント§17.7)。従来の「人×(アルバム/カメラ)ボタングリッド」を
+   ①支払者セグメント選択 ②主CTA「レシートを撮る」(最も強い・インク色ベタ)
+   ③サブ導線「アルバムから選ぶ」(アウトライン控えめ)へ再構成する。
    --------------------------------------------------------------------- */
 .add-buttons {
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  flex-wrap: wrap;
-  padding-bottom: 14px;
+  padding-bottom: 18px;
   margin-bottom: 0;
 }
 
-/* 撮り方ヒント(`.superpowers/sdd/ocr-investigation.md`調査結論)。取り込みボタン群の直下に
-   常時表示する装飾的な案内文。レシートモチーフに馴染む控えめな印字風スタイル
-   (薄れた印字色--ink-faded・モノスペース)にする。 */
+.payer-select {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.payer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  background: transparent;
+  color: var(--ink-faded);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+/* 選択中は色+太字+枠線の三重で明示する(色だけに頼らない、設計ドキュメント既存a11y方針)。 */
+.payer-chip[aria-pressed="true"] {
+  background: var(--person-soft, color-mix(in srgb, var(--ink) 10%, var(--paper)));
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.payer-chip.person-color-0 { --person-accent: var(--person-color-0); --person-soft: color-mix(in srgb, var(--person-color-0) 18%, var(--paper)); }
+.payer-chip.person-color-1 { --person-accent: var(--person-color-1); --person-soft: color-mix(in srgb, var(--person-color-1) 18%, var(--paper)); }
+.payer-chip.person-color-2 { --person-accent: var(--person-color-2); --person-soft: color-mix(in srgb, var(--person-color-2) 18%, var(--paper)); }
+.payer-chip.person-color-3 { --person-accent: var(--person-color-3); --person-soft: color-mix(in srgb, var(--person-color-3) 18%, var(--paper)); }
+.payer-chip.person-color-4 { --person-accent: var(--person-color-4); --person-soft: color-mix(in srgb, var(--person-color-4) 18%, var(--paper)); }
+.payer-chip.person-color-5 { --person-accent: var(--person-color-5); --person-soft: color-mix(in srgb, var(--person-color-5) 18%, var(--paper)); }
+.payer-chip.person-color-6 { --person-accent: var(--person-color-6); --person-soft: color-mix(in srgb, var(--person-color-6) 18%, var(--paper)); }
+.payer-chip.person-color-7 { --person-accent: var(--person-color-7); --person-soft: color-mix(in srgb, var(--person-color-7) 18%, var(--paper)); }
+
+.capture-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+/* 主CTA(設計ドキュメント§17.7): 画面で最も強いボタン。インク色ベタ塗り・大きめ。 */
+.capture-primary {
+  flex: 1 1 200px;
+  min-height: 52px;
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+/* サブ導線: アウトライン控えめ。 */
+.capture-secondary {
+  flex: 1 1 160px;
+  min-height: 52px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
 .capture-hint {
-  margin: 0 0 14px;
+  margin: 0 0 4px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   color: var(--ink-faded);
 }
-.payer-group {
-  flex: 1;
-  min-width: 150px;
-  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
-  border-radius: var(--radius-print);
-  padding: 10px;
-}
-.payer-group.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
-.payer-group.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
-.payer-group.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
-.payer-group.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
-.payer-group.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
-.payer-group.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
-.payer-group.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
-.payer-group.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
-.payer-group h2 {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  /* 見出しは800(設計ドキュメント§15.3、Codexレビュー v1.2再指摘Minor#2: 700のままだった)。 */
-  font-weight: 800;
-  margin: 0 0 8px;
-  background: var(--person-marker, transparent);
-  color: var(--ink);
-  border-radius: 2px 8px 4px 8px;
-  padding: 2px 8px;
-  overflow-wrap: anywhere; max-width: 100%;
-}
-.payer-group button {
-  display: block; width: 100%; margin-top: 6px; padding: 10px; font-size: 15px; min-height: 44px;
-  border: 1.5px solid var(--ink); border-radius: var(--radius-print);
-  background: var(--paper); color: var(--ink); font-weight: 600;
-}
-.payer-group button:hover { background: color-mix(in srgb, var(--ink) 6%, var(--paper)); }
 
 /* ---------------------------------------------------------------------
-   レシート一覧(設計ドキュメント§15.4): 行区切りはミシン目(dashed)、
-   追加時は「印字」アニメーション(transform/opacityのみ、200ms、stagger 60ms)。
+   レシート一覧(設計ドキュメント§17.6): 行区切りはヘアライン1px低アルファ、
+   追加時は「印字」アニメーション(維持)。
    --------------------------------------------------------------------- */
 .receipt-list {
   list-style: none;
@@ -356,13 +371,9 @@ main {
 }
 .receipt-row {
   display: flex; gap: 10px; align-items: flex-start;
-  border-bottom: var(--rule-dashed);
-  padding: 12px 2px;
+  border-bottom: var(--rule-hairline);
+  padding: 14px 2px;
   animation: receipt-print-in 200ms ease-out both;
-  /* 30枚超の月でもスクロール性能を落とさない(web-design-guidelines監査、§15.7)。
-     画面外の行はレイアウト・描画をスキップし、intrinsic-sizeで概算の高さ(2行程度の
-     実測値)を確保してレイアウトシフトを防ぐ。`.thumb-overlay`はcreatePortalで
-     document.body直下へ描画されるため、この行のcontainmentの影響を受けない。 */
   content-visibility: auto;
   contain-intrinsic-size: auto 72px;
 }
@@ -374,142 +385,139 @@ main {
 }
 
 .thumb-button {
-  flex: none; padding: 0; border: none; background: none; border-radius: 2px; overflow: hidden;
+  flex: none; padding: 0; border: none; background: none; border-radius: var(--radius-sm); overflow: hidden;
   width: 48px; height: 48px; min-width: 44px; min-height: 44px;
-  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
 }
 .thumb { display: block; width: 48px; height: 48px; object-fit: cover; }
 .thumb-overlay {
-  /* document.body直下へcreatePortalで描画される(Codexレビュー v1.2指摘I1)。z-indexは
-     .summary-panel等アプリ内の他要素より確実に上に出る値にする。 */
-  position: fixed; inset: 0; z-index: 1000; background: rgba(38, 36, 31, 0.92);
+  position: fixed; inset: 0; z-index: 1000; background: rgba(23, 23, 21, 0.92);
   display: flex; align-items: center; justify-content: center; padding: 16px;
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
-  /* フルスクリーンのモーダル(web-design-guidelines監査、§15.7): 背景のスクロール
-     チェイニングを防ぐ。 */
   overscroll-behavior: contain;
 }
-.thumb-overlay-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 2px; }
+.thumb-overlay-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-sm); }
 .thumb-overlay-close {
   position: absolute; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
-  min-height: 44px; min-width: 44px; padding: 8px 14px; border-radius: var(--radius-print); border: 1.5px solid var(--ink);
-  background: var(--paper); color: var(--ink); font-size: 15px; font-weight: 600;
+  min-height: 44px; min-width: 44px; padding: 8px 14px; border-radius: var(--radius-sm); border: 1.5px solid var(--paper);
+  background: transparent; color: var(--paper); font-size: 15px; font-weight: 600;
 }
 
 .row-main { flex: 1; min-width: 0; }
-.row-label { font-weight: 700; }
+.row-label { font-weight: 600; color: var(--ink-faded); font-size: 13px; }
 .amount {
-  font-size: 19px; font-weight: 800; background: none; border: none;
-  border-bottom: 1.5px dashed var(--ink); border-radius: 0; padding: 4px 4px; min-height: 44px; color: var(--ink);
+  display: block;
+  font-size: 20px; font-weight: 700; background: none; border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); border-radius: 0;
+  padding: 4px 4px; min-height: 44px; color: var(--ink);
 }
 .amount-editor { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
-/* iOS Safariはinputのfont-sizeが16px未満だとフォーカス時に自動拡大するため明示指定する。 */
 .amount-editor input {
-  font-size: 16px; min-height: 44px; padding: 4px 8px; border: 1.5px solid var(--ink); border-radius: var(--radius-print);
+  font-size: 16px; min-height: 44px; padding: 4px 8px; border: 1.5px solid var(--ink); border-radius: var(--radius-sm);
   width: 8em;
 }
 .amount-editor button {
-  min-height: 44px; min-width: 44px; padding: 4px 10px; border-radius: var(--radius-print);
-  border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+  min-height: 44px; min-width: 44px; padding: 4px 10px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); background: var(--paper); color: var(--ink);
 }
 .sign-toggle[aria-pressed="true"] { background: var(--stamp); border-color: var(--stamp); color: #fff; }
 .amount-error { color: var(--stamp-text); margin: 4px 0 0; font-size: 13px; width: 100%; }
 .failure-message { color: var(--stamp-text); margin: 4px 0 0; font-size: 13px; width: 100%; }
 
-/* 行の現在の支払者(設計ドキュメント§14.1: 色+テキストで識別)。人名部分は
-   蛍光マーカー風ハイライトのチップ(§15.4)。 */
+/* 行の現在の支払者(色+テキストで識別)。ソフトチップ(§17.3)。 */
 .row-payer {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12px; font-weight: 700; color: var(--ink);
-  background: var(--person-marker, transparent); border-radius: 2px 8px 4px 8px;
+  font-size: 12px; font-weight: 600; color: var(--ink);
+  background: var(--person-soft, transparent); border-radius: var(--radius-sm);
   padding: 2px 8px 2px 6px; margin-left: 6px;
   overflow-wrap: anywhere; max-width: 100%;
 }
-.row-payer.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
-.row-payer.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
-.row-payer.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
-.row-payer.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
-.row-payer.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
-.row-payer.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
-.row-payer.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
-.row-payer.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
+.row-payer.person-color-0 { --person-accent: var(--person-color-0); --person-soft: color-mix(in srgb, var(--person-color-0) 16%, var(--paper)); }
+.row-payer.person-color-1 { --person-accent: var(--person-color-1); --person-soft: color-mix(in srgb, var(--person-color-1) 16%, var(--paper)); }
+.row-payer.person-color-2 { --person-accent: var(--person-color-2); --person-soft: color-mix(in srgb, var(--person-color-2) 16%, var(--paper)); }
+.row-payer.person-color-3 { --person-accent: var(--person-color-3); --person-soft: color-mix(in srgb, var(--person-color-3) 16%, var(--paper)); }
+.row-payer.person-color-4 { --person-accent: var(--person-color-4); --person-soft: color-mix(in srgb, var(--person-color-4) 16%, var(--paper)); }
+.row-payer.person-color-5 { --person-accent: var(--person-color-5); --person-soft: color-mix(in srgb, var(--person-color-5) 16%, var(--paper)); }
+.row-payer.person-color-6 { --person-accent: var(--person-color-6); --person-soft: color-mix(in srgb, var(--person-color-6) 16%, var(--paper)); }
+.row-payer.person-color-7 { --person-accent: var(--person-color-7); --person-soft: color-mix(in srgb, var(--person-color-7) 16%, var(--paper)); }
 
-/* 状態バッジ(設計ドキュメント§15.4)。
+/* 状態バッジ(設計ドキュメント§17.8)。
    - 自動読取: 印字風のモノスペーステキスト(枠なし・インク色)
-   - 確認済/手入力: 朱肉の判子風(朱色の枠+わずかな回転・透過背景)
-   - 要確認/読取失敗: 朱色塗りのピル(白文字、AA確保)
-   - 処理中: どの状態色とも混同しない専用スタイル+点滅する印字カーソル */
+   - 確認済/手入力: ごく控えめな朱肉スタンプ(細枠+わずかな回転)。遷移時に軽く
+     押されるマイクロインタラクション(stamp-press、150-200ms)
+   - 要確認/読取失敗: 塗りの効いたピルは廃止し、小さな朱色ドット+朱色文字のみ
+     (フラットな塗りにすると白文字コントラストが確保しにくいための意匠変更でもある)
+   - 処理中: 専用スタイル+点滅する印字カーソル */
 .badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; font-weight: 700; margin-left: 6px;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; margin-left: 6px;
 }
 .badge-auto-high {
-  font-family: var(--font-mono); color: var(--ink); background: none; border: none; padding: 0;
+  font-family: var(--font-mono); color: var(--ink-faded); background: none; border: none; padding: 0;
 }
 .badge-confirmed, .badge-manual {
   font-family: var(--font-mono); letter-spacing: 0.02em;
-  border: 1.5px solid var(--stamp); color: var(--stamp-text); background: transparent;
-  padding: 1px 10px; border-radius: var(--radius-print); transform: rotate(-3deg);
+  border: 1px solid var(--stamp); color: var(--stamp-text); background: transparent;
+  padding: 1px 9px; border-radius: var(--radius-sm); transform: rotate(-2deg);
+  animation: stamp-press 180ms ease-out both;
 }
 .badge-needs-review, .badge-failed {
-  background: var(--stamp); color: #fff; border-radius: var(--radius-pill); padding: 2px 10px;
+  color: var(--stamp-text); font-weight: 700; background: none; border: none; padding: 0;
+}
+.badge-needs-review::before, .badge-failed::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--stamp); flex: none;
 }
 .badge-processing {
   font-family: var(--font-mono); color: var(--ink-faded); background: none; border: none; padding: 0;
 }
 
-/* 処理中の行本体・要確認/失敗の行本体は、それぞれ淡いウォッシュで区別する
-   (Codexレビュー指摘M2: 処理中は失敗色と混同しない専用クラス)。淡い着色のみで、
-   行内のテキストは常に濃い`--ink`のため、どのウォッシュに乗ってもコントラストは
-   実質変わらない(14:1超)。 */
-.status-needs-review, .status-failed { background: color-mix(in srgb, var(--stamp) 6%, var(--paper)); }
-.is-processing { background: color-mix(in srgb, var(--ink) 5%, var(--paper)); }
+@keyframes stamp-press {
+  from { transform: rotate(-2deg) scale(1.06); opacity: 0; }
+  to { transform: rotate(-2deg) scale(1); opacity: 1; }
+}
+
+.status-needs-review, .status-failed { background: color-mix(in srgb, var(--stamp) 5%, var(--paper)); }
+.is-processing { background: color-mix(in srgb, var(--ink) 4%, var(--paper)); }
 .status-auto-high, .status-confirmed, .status-manual { background: transparent; }
 
-/* 処理中インジケータ: 点滅する印字カーソル「▮」(設計ドキュメント§15.5)。
-   文字はCSS生成コンテンツ(::before)で描画するため、要素自体のtextContentは
-   空のまま(バッジ内の「処理中…」テキストとDOM上で混ざらない)。 */
+/* 処理中インジケータ: 点滅する印字カーソル「▮」(維持・洗練)。 */
 @keyframes print-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 .print-cursor {
   display: inline-block; width: 0.6em;
-  font-family: var(--font-mono); color: var(--ink);
+  font-family: var(--font-mono); color: var(--ink-faded);
 }
 .print-cursor::before {
   content: "▮";
   animation: print-cursor-blink 1s steps(1) infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-  .print-cursor::before { animation: none; }
-}
 
 .candidates { margin-top: 4px; }
 .candidates button, .row-actions button, .retry-button { min-height: 44px; min-width: 44px; }
 .candidates button {
-  border-radius: var(--radius-print); border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+  border-radius: var(--radius-sm); border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); background: var(--paper); color: var(--ink);
   margin-left: 4px; padding: 4px 10px;
 }
 .retry-button {
-  margin-top: 4px; padding: 6px 12px; border-radius: var(--radius-print);
-  border: 1.5px solid var(--stamp); background: var(--paper); color: var(--ink); font-weight: 700;
+  margin-top: 4px; padding: 6px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--stamp); background: var(--paper); color: var(--stamp-text); font-weight: 600;
 }
 .row-actions { display: flex; flex-direction: column; gap: 4px; }
 .row-actions button {
-  padding: 4px 8px; border-radius: var(--radius-print); border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+  padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); background: var(--paper); color: var(--ink);
 }
-.row-actions button[aria-label$="削除"] { border-color: var(--stamp); }
+.row-actions button[aria-label$="削除"] { border-color: var(--stamp); color: var(--stamp-text); }
 
 .error { color: var(--stamp-text); }
 
-/* v1.3(§16.5): 複数レシート自動分割の回復導線(グループ内に失敗行がある・領域判定が
-   曖昧・領域数が上限付近の場合のみ表示)。行区切り(ミシン目)の外側の独立した警告帯として、
-   朱色(--stamp)の枠で目立たせる。手動の矩形編集・分割/結合UIは作らない。 */
+/* v1.3(§16.5)の回復導線: 破線は「要所」としてここに残す(設計ドキュメント§17.6)。 */
 .region-group-recovery {
   list-style: none;
-  border: 1.5px dashed var(--stamp);
-  border-radius: var(--radius-print);
-  padding: 8px 10px;
-  margin: 4px 0 10px;
+  border: var(--rule-dashed);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin: 6px 0 12px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -517,109 +525,167 @@ main {
 }
 .region-group-recovery p { margin: 0; flex: 1 1 100%; color: var(--stamp-text); font-size: 13px; }
 .region-group-recovery button {
-  min-height: 44px; padding: 6px 12px; border-radius: var(--radius-print);
-  border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink); font-weight: 700;
+  min-height: 44px; padding: 6px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--ink); background: var(--paper); color: var(--ink); font-weight: 600;
 }
 
 .cancel-all {
-  min-height: 44px; padding: 8px 14px; margin: 4px 0 14px;
-  border-radius: var(--radius-print); border: 1.5px solid var(--stamp); background: var(--paper); color: var(--ink); font-weight: 700;
+  min-height: 44px; padding: 8px 14px; margin: 4px 0 16px;
+  border-radius: var(--radius-sm); border: 1px solid var(--stamp); background: var(--paper); color: var(--stamp-text); font-weight: 600;
 }
-/* 進捗カウント(「画像 N/M 処理中…」等)もモノスペース+桁揃え(設計ドキュメント§15.3、
-   Codexレビュー v1.2再指摘Minor#2: 対象セレクタから漏れていた)。 */
 .ocr-status { color: var(--ink-faded); font-size: 14px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .ocr-model-error {
-  border: 1.5px solid var(--stamp); border-radius: var(--radius-print);
-  padding: 10px 12px; margin-bottom: 14px; background: var(--paper);
+  border: 1px solid var(--stamp); border-radius: var(--radius-md);
+  padding: 12px 14px; margin-bottom: 16px; background: var(--paper);
 }
 .ocr-model-error button {
-  min-height: 44px; padding: 8px 14px; border-radius: var(--radius-print); border: 1.5px solid var(--ink);
-  background: var(--paper); color: var(--ink); font-weight: 700;
+  min-height: 44px; padding: 8px 14px; border-radius: var(--radius-sm); border: 1px solid var(--ink);
+  background: var(--paper); color: var(--ink); font-weight: 600;
 }
 
 /* ---------------------------------------------------------------------
-   手動追加フォーム(設計ドキュメント§15.4)。
+   手動追加フォーム。
    --------------------------------------------------------------------- */
 .manual-entry {
-  padding-top: 4px;
+  padding-top: 8px;
   margin-top: 0;
-  margin-bottom: 14px;
-  display: flex; flex-direction: column; gap: 8px;
+  margin-bottom: 16px;
+  display: flex; flex-direction: column; gap: 10px;
 }
-.manual-entry h2 { font-size: 14px; font-weight: 800; margin: 0; letter-spacing: 0.04em; }
+.manual-entry h2 { font-size: 13px; font-weight: 600; margin: 0; color: var(--ink-faded); letter-spacing: 0.02em; }
 .manual-entry input, .manual-entry select {
-  font-size: 16px; min-height: 44px; padding: 4px 10px; border: 1.5px solid var(--ink); border-radius: var(--radius-print);
+  font-size: 16px; min-height: 44px; padding: 4px 10px; border: 1.5px solid var(--ink); border-radius: var(--radius-sm);
   background: var(--paper); color: var(--ink);
 }
 .manual-entry-amount { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .manual-entry-amount input { width: 8em; flex: none; }
 .manual-entry-amount .sign-toggle { min-height: 44px; min-width: 44px; padding: 4px 10px; }
-/* 主要CTA(設計ドキュメント§15.4): インク黒のベタ塗りボタン+白文字(14.97:1)。 */
+/* 主要CTA: インク黒のベタ塗りボタン+紙色文字(15.78:1)。取り込み導線の主CTAと
+   統一した意匠にする。 */
 .manual-entry > button[type="submit"] {
-  min-height: 44px; padding: 8px 18px; align-self: flex-start; border-radius: var(--radius-print);
+  min-height: 44px; padding: 10px 20px; align-self: flex-start; border-radius: var(--radius-md);
   border: 1.5px solid var(--ink); background: var(--ink); color: var(--paper); font-weight: 700;
 }
 .manual-entry-error { color: var(--stamp-text); margin: 0; font-size: 13px; }
 
 /* ---------------------------------------------------------------------
-   集計パネル(画面下部固定、設計ドキュメント§5.5/§14.3/§15.4)。
-   「合 計」欄の様式: 上に二重線、紙と同素材で下部固定。
+   集計パネル(設計ドキュメント§17.5・§17.9)。
+   スマホ・タブレット(<1024px): 画面下部固定+折りたたみ(合計行だけのコンパクト
+   表示⇄展開)。>=1024px: 下部固定をやめ、右カラムのstickyパネルにする。
    --------------------------------------------------------------------- */
 .summary-panel {
   position: fixed; bottom: 0; left: 0; right: 0;
   background-color: var(--paper);
   background-image: var(--paper-texture);
   background-size: 7px 9px, 11px 13px;
-  border-top: 6px double var(--ink);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
   box-shadow: var(--shadow-panel);
-  padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
   max-width: 640px; margin: 0 auto;
 }
-.summary-heading {
-  margin: 0 0 6px;
-  font-family: var(--font-mono);
-  font-weight: 800;
-  letter-spacing: 0.5em;
-  font-size: 13px;
-  color: var(--ink-faded);
+@media (min-width: 768px) { .summary-panel { max-width: 720px; } }
+
+.summary-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  min-height: 48px; padding: 10px 16px;
+  background: none; border: none; color: var(--ink); text-align: left;
 }
-.summary-totals { display: flex; flex-direction: column; gap: 4px; }
+/* 折りたたみ時(合計行だけの表示)はこのトグルが視覚上の最下端になるため、
+   safe-area分の余白をここへ持たせる。展開時は`.summary-body-inner`側が
+   最下端になるので二重に確保しない。 */
+.summary-panel:not(.is-expanded) .summary-toggle {
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.summary-toggle-label {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.3em; color: var(--ink-faded);
+}
+.summary-toggle-amount { font-size: 18px; font-weight: 700; margin-left: auto; }
+.summary-toggle-flag {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--stamp); flex: none;
+}
+.summary-chevron { color: var(--ink-faded); font-size: 12px; }
+
+/* 表示/非表示自体はJSX側の`hidden`属性(ネイティブセマンティクス、a11y上も正しく
+   ツリーから除外される)で制御する。ここでは展開時の控えめな出現アニメーションのみ
+   付与する。 */
+.summary-panel.is-expanded .summary-body { animation: summary-reveal 180ms ease-out; }
+@keyframes summary-reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.summary-body-inner {
+  padding: 0 16px calc(14px + env(safe-area-inset-bottom));
+}
+/* トグルバーとの境界(スマホ・タブレットで展開時のみ意味を持つ、設計ドキュメント§17.9)。
+   「合計」ラベル自体はトグル側にあるため本文側では繰り返さない。 */
+.summary-totals {
+  display: flex; flex-direction: column; gap: 6px;
+  border-top: var(--rule-hairline); padding-top: 12px;
+}
 .summary-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-/* 人の名前は自由入力・長さ無制限のため、金額(常に右端で折り返さず全体を表示)を
-   押し出さないよう、名前側だけを縮小・折り返し可能にする(web-design-guidelines監査、
-   §15.7: flexの子はmin-width:0がないと縮小・折り返しできない)。 */
 .summary-person {
-  display: inline-flex; align-items: center; gap: 5px; font-weight: 700;
-  background: var(--person-marker, transparent); border-radius: 2px 8px 4px 8px; padding: 1px 6px;
+  display: inline-flex; align-items: center; gap: 5px; font-weight: 600;
+  background: var(--person-soft, transparent); border-radius: var(--radius-sm); padding: 1px 7px;
   min-width: 0; overflow-wrap: anywhere;
 }
-.summary-amount { flex: none; }
-.summary-person.person-color-0 { --person-accent: var(--person-color-0); --person-marker: rgba(var(--marker-0-rgb), 0.55); }
-.summary-person.person-color-1 { --person-accent: var(--person-color-1); --person-marker: rgba(var(--marker-1-rgb), 0.55); }
-.summary-person.person-color-2 { --person-accent: var(--person-color-2); --person-marker: rgba(var(--marker-2-rgb), 0.55); }
-.summary-person.person-color-3 { --person-accent: var(--person-color-3); --person-marker: rgba(var(--marker-3-rgb), 0.55); }
-.summary-person.person-color-4 { --person-accent: var(--person-color-4); --person-marker: rgba(var(--marker-4-rgb), 0.55); }
-.summary-person.person-color-5 { --person-accent: var(--person-color-5); --person-marker: rgba(var(--marker-5-rgb), 0.55); }
-.summary-person.person-color-6 { --person-accent: var(--person-color-6); --person-marker: rgba(var(--marker-6-rgb), 0.55); }
-.summary-person.person-color-7 { --person-accent: var(--person-color-7); --person-marker: rgba(var(--marker-7-rgb), 0.55); }
-.summary-amount { font-size: 20px; font-weight: 800; color: var(--ink); }
-.summary-panel .delta { margin-top: 6px; font-weight: 700; color: var(--ink); border-top: var(--rule-dashed); padding-top: 6px; }
-.summary-panel .warn { color: var(--stamp-text); margin-top: 4px; font-weight: 700; }
-.summary-panel .panel-actions { display: flex; gap: 8px; margin-top: 10px; }
-.summary-panel .panel-actions button {
-  min-height: 44px; padding: 8px 12px; flex: 1; border-radius: var(--radius-print); font-weight: 700;
+.summary-amount { flex: none; font-size: 19px; font-weight: 700; color: var(--ink); }
+.summary-amount, .summary-toggle-amount { animation: amount-update-in 150ms ease-out both; }
+@keyframes amount-update-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
 }
-/* 主要CTA(結果をコピー)はインク黒のベタ塗り+白文字。「新しい月を始める」は
-   全行削除を伴う破壊的操作のため、朱肉・レジの赤系(枠線+文字色)にする
-   (Codexレビュー v1.2再指摘Minor#3: 通常のink枠のままで他の操作と区別が付かなかった)。 */
+.summary-person.person-color-0 { --person-accent: var(--person-color-0); --person-soft: color-mix(in srgb, var(--person-color-0) 16%, var(--paper)); }
+.summary-person.person-color-1 { --person-accent: var(--person-color-1); --person-soft: color-mix(in srgb, var(--person-color-1) 16%, var(--paper)); }
+.summary-person.person-color-2 { --person-accent: var(--person-color-2); --person-soft: color-mix(in srgb, var(--person-color-2) 16%, var(--paper)); }
+.summary-person.person-color-3 { --person-accent: var(--person-color-3); --person-soft: color-mix(in srgb, var(--person-color-3) 16%, var(--paper)); }
+.summary-person.person-color-4 { --person-accent: var(--person-color-4); --person-soft: color-mix(in srgb, var(--person-color-4) 16%, var(--paper)); }
+.summary-person.person-color-5 { --person-accent: var(--person-color-5); --person-soft: color-mix(in srgb, var(--person-color-5) 16%, var(--paper)); }
+.summary-person.person-color-6 { --person-accent: var(--person-color-6); --person-soft: color-mix(in srgb, var(--person-color-6) 16%, var(--paper)); }
+.summary-person.person-color-7 { --person-accent: var(--person-color-7); --person-soft: color-mix(in srgb, var(--person-color-7) 16%, var(--paper)); }
+.summary-panel .delta { margin-top: 8px; font-weight: 600; color: var(--ink); border-top: var(--rule-hairline); padding-top: 8px; }
+.summary-panel .warn { color: var(--stamp-text); margin-top: 6px; font-weight: 600; font-size: 13px; }
+.summary-panel .panel-actions { display: flex; gap: 8px; margin-top: 12px; }
+.summary-panel .panel-actions button {
+  min-height: 44px; padding: 8px 12px; flex: 1; border-radius: var(--radius-md); font-weight: 700;
+}
 .summary-panel .panel-actions button:first-child {
   border: 1.5px solid var(--ink); background: var(--ink); color: var(--paper);
 }
+.summary-panel .panel-actions button:first-child.is-copied {
+  animation: copy-success-pulse 220ms ease-out;
+}
+@keyframes copy-success-pulse {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
 .summary-panel .panel-actions button:last-child {
-  border: 1.5px solid var(--stamp); background: var(--paper); color: var(--stamp-text);
+  border: 1px solid var(--stamp); background: var(--paper); color: var(--stamp-text);
 }
 
-/* ソフトキーボード出現時に入力欄が隠れないための余白(Codexレビュー指摘I5)。 */
+/* >=1024px: 下部固定をやめ、右カラムのstickyパネルへ切り替える(設計ドキュメント§17.5)。
+   折りたたみトグルは意味を失うため隠し、常に全内容を表示する。 */
+@media (min-width: 1024px) {
+  .summary-panel {
+    position: sticky;
+    top: 40px;
+    left: auto; right: auto; bottom: auto;
+    max-width: none;
+    margin: 0;
+    border-top: none;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-paper);
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+  }
+  .summary-toggle { display: none; }
+  .summary-body { display: block; }
+  .summary-body-inner { padding: 20px; }
+  /* トグルが無い(=常に展開)ため、本文冒頭の区切り線は不要。 */
+  .summary-totals { border-top: none; padding-top: 0; }
+}
+
+/* ソフトキーボード出現時に入力欄が隠れないための余白。 */
 .manual-entry input,
 .manual-entry select,
 .amount-editor input,
@@ -629,70 +695,57 @@ main {
 
 /*
  * iOS Safariでは、ソフトキーボード表示中も画面下部固定の`.summary-panel`が
- * 表示座標を誤ることが報告されている(WebKit bug 312149 / 311821)。手動入力は
- * このアプリで必須の復旧経路(§9)なので、金額編集・手動追加フォームのいずれかの
- * input/selectがフォーカスされている間は固定を解除し、通常のドキュメントフローに
- * 戻す(Codexレビュー最終ゲート指摘I3)。`:has()`未対応ブラウザでは何もしない。
- * `.summary-panel`・`.receipt-paper`はいずれも`<main>`の直接の子(Codexレビュー
- * v1.2再指摘I4: ランドマーク分断防止のため`.summary-panel`は`<main>`の中に置く)
- * なので、以下のセレクタは構造変更の影響を受けない。
+ * 表示座標を誤ることが報告されている(WebKit bug 312149 / 311821)。スマホ・タブレット
+ * 帯域(集計パネルがposition:fixedの間)でのみ固定を解除し、通常のドキュメントフローに
+ * 戻す(設計ドキュメント§17.5: 対策自体はスマホ帯域で維持)。>=1024pxはstickyへ切り替わり
+ * fixed解除の意味が無いため対象外にする。
  */
-@supports selector(body:has(input:focus)) {
-  body:has(
-    .amount-editor input:focus,
-    .manual-entry input:focus,
-    .manual-entry select:focus,
-    .person-name-editor input:focus
-  ) .summary-panel {
-    position: static;
-    box-shadow: none;
-  }
+@media (max-width: 1023px) {
+  @supports selector(body:has(input:focus)) {
+    body:has(
+      .amount-editor input:focus,
+      .manual-entry input:focus,
+      .manual-entry select:focus,
+      .person-name-editor input:focus
+    ) .summary-panel {
+      position: static;
+      box-shadow: none;
+    }
 
-  body:has(
-    .amount-editor input:focus,
-    .manual-entry input:focus,
-    .manual-entry select:focus,
-    .person-name-editor input:focus
-  ) .receipt-paper {
-    /* 固定パネル解除中は、パネル分の予約(230px)ではなく通常の余白でよい */
-    padding-bottom: 22px;
+    body:has(
+      .amount-editor input:focus,
+      .manual-entry input:focus,
+      .manual-entry select:focus,
+      .person-name-editor input:focus
+    ) .receipt-paper {
+      padding-bottom: 28px;
+    }
   }
 }
 
 /* ---------------------------------------------------------------------
-   hover/active状態(web-design-guidelines監査、§15.7: interactive states increase
-   contrast)。枠線+紙色背景の標準ボタンは背景をわずかに濃く(hover)・さらに濃く
-   (active、押し込まれた印象にわずかに沈める)する。`aria-pressed="true"`の符号切替
-   ボタンやdisabledボタンは背景そのものが状態を表しているため対象外にする
-   (上書きするとコントラストが崩れる)。文字色は常に`--ink`/`--stamp-text`のまま
-   なので、背景をわずかに濃くしてもコントラストは維持(むしろ僅かに向上)される。
+   hover/active状態。
    --------------------------------------------------------------------- */
 button:not(:disabled):not([aria-pressed="true"]):hover,
 [role="button"]:not(:disabled):not([aria-pressed="true"]):hover {
-  background: color-mix(in srgb, var(--ink) 8%, var(--paper));
+  background: color-mix(in srgb, var(--ink) 6%, var(--paper));
 }
 button:not(:disabled):not([aria-pressed="true"]):active,
 [role="button"]:not(:disabled):not([aria-pressed="true"]):active {
-  background: color-mix(in srgb, var(--ink) 14%, var(--paper));
-  transform: translateY(1px);
-}
-.payer-group button:active {
   background: color-mix(in srgb, var(--ink) 12%, var(--paper));
   transform: translateY(1px);
 }
 
-/* ベタ塗りCTA(インク黒背景+紙色文字)は逆方向: 地の色を僅かに明るくする。 */
-.manual-entry > button[type="submit"]:not(:disabled):hover,
+.capture-primary:not(:disabled):hover, .manual-entry > button[type="submit"]:not(:disabled):hover,
 .summary-panel .panel-actions button:first-child:not(:disabled):hover {
   background: color-mix(in srgb, var(--paper) 15%, var(--ink));
 }
-.manual-entry > button[type="submit"]:not(:disabled):active,
+.capture-primary:not(:disabled):active, .manual-entry > button[type="submit"]:not(:disabled):active,
 .summary-panel .panel-actions button:first-child:not(:disabled):active {
   background: color-mix(in srgb, var(--paper) 25%, var(--ink));
   transform: translateY(1px);
 }
 
-/* 「新しい月を始める」(朱色系の破壊的操作ボタン)は朱色を基準に濃淡だけ変える。 */
 .summary-panel .panel-actions button:last-child:not(:disabled):hover {
   background: color-mix(in srgb, var(--stamp) 10%, var(--paper));
 }
@@ -701,8 +754,6 @@ button:not(:disabled):not([aria-pressed="true"]):active,
   transform: translateY(1px);
 }
 
-/* 符号切替の押下状態(朱色塗り+白文字)はhover/activeでも朱色系のまま濃淡だけ変える
-   (上のaria-pressed除外ルールにより一般ルールは当たらないため、ここで個別に定義する)。 */
 .sign-toggle[aria-pressed="true"]:hover {
   background: color-mix(in srgb, var(--ink) 10%, var(--stamp));
 }
@@ -711,16 +762,24 @@ button:not(:disabled):not([aria-pressed="true"]):active,
   transform: translateY(1px);
 }
 
-/* フォーカスリング(アクセシビリティ: 全インタラクティブ要素で視認できること)。
-   朱色は紙(#FCFBF7)に対して4.83:1、非テキストコントラスト基準(3:1)を満たす。 */
+.payer-chip[aria-pressed="true"]:hover, .payer-chip[aria-pressed="true"]:active {
+  background: var(--person-soft, color-mix(in srgb, var(--ink) 10%, var(--paper)));
+}
+
 :focus-visible {
   outline: 2px solid var(--stamp);
   outline-offset: 2px;
 }
 
-/* 印字アニメーション・点滅カーソルは`prefers-reduced-motion: reduce`で全停止する
-   (設計ドキュメント§15.5)。 */
+/* 印字アニメーション・点滅カーソル・マイクロインタラクションは
+   `prefers-reduced-motion: reduce` で全停止する(設計ドキュメント§17.10)。 */
 @media (prefers-reduced-motion: reduce) {
-  .receipt-row { animation: none; }
+  .receipt-row,
+  .badge-confirmed, .badge-manual,
+  .summary-panel.is-expanded .summary-body,
+  .summary-amount, .summary-toggle-amount,
+  .summary-panel .panel-actions button:first-child.is-copied {
+    animation: none;
+  }
   .print-cursor::before { animation: none; }
 }

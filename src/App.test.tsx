@@ -144,22 +144,38 @@ describe("App", () => {
     expect(container.querySelector(".add-buttons")?.nextElementSibling).toBe(hint);
   });
 
-  it("取り込みボタン群は人リストから動的生成される(2人・3人でも人数分だけ生成される、設計ドキュメント§14.1)", () => {
+  it("取り込み導線は支払者セグメントで選択中の1人分だけを表示し、hidden inputは人数分だけ生成される(設計ドキュメント§17.7)", () => {
+    // v1.4で「人×(アルバム/カメラ)ボタングリッド」から「①支払者セグメント選択
+    // ②主CTA ③サブ導線」へ再構成した(旧: 全員分のボタンが同時に表示されていた)。
+    // hidden file input方式そのものは人数分だけ維持される(重複検出等の既存機能に影響しない)。
     seedTwoPeople();
     const { container } = render(<App />);
 
-    // 同じ視覚テキスト("アルバムから選ぶ"等)のボタンは、スクリーンリーダーの
-    // ボタン一覧で対象を判別できるようaria-labelで行き先を明示する(Codexレビュー指摘I9)。
+    // 初期選択は人リストの先頭(夫)。夫のボタンだけが見え、妻のボタンはまだ無い。
     expect(screen.getByRole("button", { name: "夫のレシートをアルバムから選ぶ" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "妻のレシートをアルバムから選ぶ" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "夫のレシートをカメラで撮る" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "妻のレシートをカメラで撮る" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "妻のレシートをアルバムから選ぶ" })).toBeNull();
     expect(container.querySelectorAll('input[type="file"]')).toHaveLength(4);
 
-    // 「+ 人を追加」でボタン群も増える(既に2人いるので新規追加分は「3人目」)
+    // 支払者セグメントで「妻」を選ぶと、CTAのaria-labelが妻へ切り替わる(選択中を明示)。
+    const wifeChip = screen.getByRole("button", { name: "妻" });
+    expect(wifeChip.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(wifeChip);
+    expect(wifeChip.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "妻のレシートをアルバムから選ぶ" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "妻のレシートをカメラで撮る" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "夫のレシートをアルバムから選ぶ" })).toBeNull();
+
+    // 「+ 人を追加」でhidden inputも増える(既に2人いるので新規追加分は「3人目」)
     fireEvent.click(screen.getByRole("button", { name: "+ 人を追加" }));
-    expect(screen.getByRole("button", { name: "3人目のレシートをアルバムから選ぶ" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "3人目" })).toBeTruthy();
     expect(container.querySelectorAll('input[type="file"]')).toHaveLength(6);
+  });
+
+  it("人が1人のときは支払者セグメントを表示しない(選ぶ意味が無いため、設計ドキュメント§17.7)", () => {
+    render(<App />); // デフォルト状態は人1人(わたし)
+    expect(screen.queryByRole("group", { name: "支払った人を選択" })).toBeNull();
+    expect(screen.getByRole("button", { name: "わたしのレシートをカメラで撮る" })).toBeTruthy();
   });
 
   it("人の改名は取り込みボタン・手動追加の選択肢へ反映され、行が残っている人の削除は拒否される(設計ドキュメント§14.1)", () => {

@@ -199,6 +199,36 @@ describe("SummaryPanel", () => {
     expect(alertSpy).toHaveBeenCalledWith("コピーできませんでした");
   });
 
+  it("折りたたみトグル(設計ドキュメント§17.9): 既定は展開状態で、トグルで合計行だけのコンパクト表示に切り替わる", () => {
+    const state: AppState = {
+      month: "2026-07",
+      people: twoPeople,
+      saveFailed: false,
+      rows: [row({ id: "a", payerId: HUSBAND.id, amountYen: 3000 }), row({ id: "b", payerId: WIFE.id, amountYen: 1000 })],
+    };
+    const { container } = render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
+
+    // 既定(expanded)では合計行(トグル)にも4,000円(全員の合計)が出ており、
+    // 展開中の内訳(3,000円/1,000円)も両方アクセス可能。
+    const toggle = screen.getByRole("button", { name: "集計を折りたたむ" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.textContent).toContain("4,000円");
+    const body = container.querySelector(".summary-body") as HTMLElement;
+    expect(body.hidden).toBe(false);
+    expect(screen.getByText("3,000円")).toBeTruthy();
+
+    // トグルを押すと折りたたまれ、内訳(本文)はhidden属性で隠れる。
+    fireEvent.click(toggle);
+    const collapsedToggle = screen.getByRole("button", { name: "集計を展開" });
+    expect(collapsedToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(body.hidden).toBe(true);
+
+    // もう一度押すと展開に戻る。
+    fireEvent.click(collapsedToggle);
+    expect(screen.getByRole("button", { name: "集計を折りたたむ" }).getAttribute("aria-expanded")).toBe("true");
+    expect(body.hidden).toBe(false);
+  });
+
   it("マウント時にResizeObserverで実高さを--summary-panel-heightへ反映し、アンマウントで解除する(Codexレビュー v1.2再指摘I2)", () => {
     // サマリーは「1人1行」で可変高になったため、`.receipt-paper`側の固定230px予約では
     // 人数・名前の長さによって最終コンテンツが隠れる退行があった。ResizeObserverで

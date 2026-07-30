@@ -514,12 +514,10 @@ export default function App() {
     <main>
       {/* 「紙」本体(設計ドキュメント§15.2)。 */}
       <div className="receipt-paper">
-        {/* レシートの店名ヘッダー様式(設計ドキュメント§15.3): モノスペース・中央寄せ・
-            字間広め、上下に「＊ ＊ ＊」の装飾行(装飾のみ・aria-hidden)。 */}
+        {/* レシートの店名ヘッダー様式(設計ドキュメント§17.4): モノスペース・中央寄せ・
+            字間広めのみで品を出す(「＊ ＊ ＊」装飾は廃止)。 */}
         <header className="receipt-header">
-          <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
           <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
-          <p className="receipt-deco" aria-hidden="true">＊ ＊ ＊</p>
         </header>
         <PeopleManager
           people={state.people}
@@ -536,8 +534,9 @@ export default function App() {
           レシートを画面いっぱい・まっすぐ・ピントを合わせて撮ると読み取り精度が上がります。複数枚まとめて撮る場合は間隔を空けて並べてください。
         </p>
 
-        {/* 切り取り線装飾(設計ドキュメント§15.4、装飾のみ・aria-hidden)。 */}
-        <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
+        {/* セクション区切り(設計ドキュメント§17.6): 破線・ハサミ演出は廃止し、
+            低アルファのヘアライン1本にする(装飾のみ・aria-hidden)。 */}
+        <div className="section-divider" aria-hidden="true" />
 
         {ocrEvent?.kind === "model-error" ? (
           <div role="alert" className="error ocr-model-error">
@@ -591,7 +590,7 @@ export default function App() {
             return elements;
           })}
         </ul>
-        <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
+        <div className="section-divider" aria-hidden="true" />
         <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
       </div>
       <SummaryPanel state={state} onNewMonth={onNewMonth} />
