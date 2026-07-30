@@ -4,9 +4,15 @@ import { PeopleManager } from "./components/PeopleManager";
 import { ReceiptRow } from "./components/ReceiptRow";
 import { ManualEntryForm } from "./components/ManualEntryForm";
 import { SummaryPanel } from "./components/SummaryPanel";
-import { createOcrQueue, type OcrQueue, type QueueStatusEvent } from "./ocr/queue";
+import {
+  createOcrQueue,
+  type OcrQueue,
+  type QueueStatusEvent,
+  type NormalizedRect,
+  type RegionGroupFlags,
+} from "./ocr/queue";
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
-import { reducer, toPersisted, fromPersisted, computeTotals, type AppState, type RowPatch } from "./state/reducer";
+import { reducer, toPersisted, fromPersisted, computeTotals, nextReceiptLabel, type AppState, type RowPatch } from "./state/reducer";
 import { saveState, loadState, currentMonth } from "./state/storage";
 import type { Row } from "./types";
 
@@ -25,22 +31,28 @@ const initialState = (): AppState => {
       };
 };
 
-const RECEIPT_LABEL_RE = /^レシート (\d+)$/;
+/**
+ * 失敗行の再試行(Codexレビュー指摘I8)・v1.3(§16.4)の領域再試行の両方を表す再試行元。
+ * - `crop`未指定: 写真全体を新規写真として検出からやり直す(従来の再試行、および
+ *   §16.5「写真全体を1枚として読み直す」)。
+ * - `crop`指定: 特定の1領域だけを元解像度から再クロップする(分割された1行の再試行)。
+ * - `forceSingle`指定: 検出をスキップし、写真全体を1領域として強制的に読み直す
+ *   (§16.5の回復導線専用。誤って2分割された場合の回復)。
+ */
+type RetrySource = { file: File; crop?: NormalizedRect; forceSingle?: boolean };
 
 /**
- * 次の自動採番ラベルの番号を、現在の行(=永続化済み+今のセッションで追加した分)の
- * ラベルから導出する。モジュールスコープの可変カウンタ(let nextReceiptNumber = 1)だと
- * ページ再読み込みのたびに1へリセットされ、保存済みの「レシート 3」等と新規行が
- * 番号衝突する(Codexレビュー指摘)。state.rowsから毎回導出すれば再読み込み後も
- * 継続した採番になる。
+ * 写真単位のグループ管理(v1.3 §16.5)。photoIdをRowに持たせず、refのMap(非永続)で
+ * 管理する(PersistedStateスキーマは変更しない)。1枚の写真が複数領域(レシート)に
+ * 分割された場合のみエントリを持つ(領域が1つの場合はグループを作らない=既存の
+ * 1枚運用と変わらない)。
  */
-function nextReceiptLabel(rows: Row[]): (offset: number) => string {
-  const max = rows.reduce((acc, r) => {
-    const m = RECEIPT_LABEL_RE.exec(r.label);
-    return m ? Math.max(acc, Number(m[1])) : acc;
-  }, 0);
-  return (offset: number) => `レシート ${max + offset}`;
-}
+type PhotoGroup = {
+  file: File;
+  rowIds: string[];
+  ambiguous: boolean;
+  nearLimit: boolean;
+};
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
@@ -54,8 +66,12 @@ export default function App() {
   // 新しいengine/queueが作られ直すため、「dispose済みの古いqueueを実運用でも
   // 使い続けてしまう」事故が起きない。onFiles等からは常にqueueRef経由で参照する。
   const queueRef = useRef<OcrQueue | null>(null);
-  // 失敗行の再試行(I8)用に、追加時のFileをid別に保持する。行削除時にクリアする。
-  const retryFilesRef = useRef(new Map<string, File>());
+  // 失敗行の再試行(I8)・v1.3領域再試行(§16.4)用に、追加時のRetrySourceをid別に保持する。
+  // 行削除時にクリアする。
+  const retryFilesRef = useRef(new Map<string, RetrySource>());
+  // v1.3(§16.5): 写真単位のグループ管理(非永続、photoJobId→グループ)。1枚の写真が
+  // 複数領域に分割された場合のみエントリを持つ。
+  const photoGroupRef = useRef(new Map<string, PhotoGroup>());
   // 印字アニメーションのstagger遅延(ms)をid別に保持する(Codexレビュー v1.2再指摘I5)。
   // 「追加バッチ内のindex」から算出し、ReceiptRowへそのままpropとして渡す。一覧全体の
   // 通し番号から逆算する旧実装は、既存行が10件以上ある状態で1件だけ追加しても
@@ -109,6 +125,41 @@ export default function App() {
 
     const queue = createOcrQueue(engine, {
       onStatus: (event) => setOcrEvent(event),
+      // v1.3(§16.4): パス1(検出)完了時、1枚の写真が複数領域(レシート)に分割された
+      // ことの通知。プレースホルダ行(=写真1枚分の当初の行)をN行へ原子的に置換し
+      // (`replacePendingRow`)、各新行を領域ごとのjobIdへ紐づけ直す。領域が1つの場合は
+      // このコールバック自体が発火しない(既存の1枚運用と完全互換)。
+      onRegions: (photoJobId, regions, flags: RegionGroupFlags) => {
+        const rowId = jobRowRef.current.get(photoJobId);
+        if (!rowId || activeJobRef.current.get(rowId) !== photoJobId) return; // 削除済み・無効化済みのjob
+        const originalRow = rowsRef.current.find((r) => r.id === rowId);
+        const originalSource = retryFilesRef.current.get(rowId);
+        if (!originalRow || !originalSource) return;
+
+        invalidateJobForRow(rowId);
+        retryFilesRef.current.delete(rowId);
+
+        const newRowIds = regions.map(() => crypto.randomUUID());
+        dispatch({
+          type: "replacePendingRow",
+          placeholderId: rowId,
+          newRows: newRowIds.map((id) => ({ id, payerId: originalRow.payerId })),
+        });
+
+        regions.forEach((region, i) => {
+          const newRowId = newRowIds[i];
+          activeJobRef.current.set(newRowId, region.jobId);
+          jobRowRef.current.set(region.jobId, newRowId);
+          retryFilesRef.current.set(newRowId, { file: originalSource.file, crop: region.crop });
+        });
+
+        photoGroupRef.current.set(photoJobId, {
+          file: originalSource.file,
+          rowIds: newRowIds,
+          ambiguous: flags.ambiguous,
+          nearLimit: flags.nearLimit,
+        });
+      },
       onThumbnail: (jobId, blob) => {
         const resolved = resolveActiveRow(jobId);
         // 削除済み行、または既に無効化された古いjobへの遅着Blobは表示先が無いので、
@@ -185,12 +236,14 @@ export default function App() {
   // 行(rowId)に対して新しい試行(jobId)を発行してenqueueする。以前その行に紐づいて
   // いたjobId(あれば)はここで置き換えられ、以後は「アクティブでない」ため、後から
   // 遅れて届く結果は無視される(Codexレビュー再指摘C1)。
-  const enqueueForRow = (rowId: string, file: File) => {
+  // v1.3(§16.4): `source.crop`/`source.forceSingle`はそのままqueueへ渡す(通常の新規写真は
+  // どちらも未指定)。
+  const enqueueForRow = (rowId: string, source: RetrySource) => {
     invalidateJobForRow(rowId); // 前のjob(あれば)の逆引きエントリも解放してから差し替える
     const jobId = crypto.randomUUID();
     activeJobRef.current.set(rowId, jobId);
     jobRowRef.current.set(jobId, rowId);
-    queueRef.current?.enqueue(jobId, file);
+    queueRef.current?.enqueue(jobId, source.file, { crop: source.crop, forceSingle: source.forceSingle });
   };
 
   const onFiles = (payerId: string, files: File[]) => {
@@ -220,8 +273,8 @@ export default function App() {
         // サムネイルはOCRキューが処理済み縮小canvasから生成し、onThumbnailで届く。
         processing: true,
       });
-      retryFilesRef.current.set(id, file);
-      enqueueForRow(id, file);
+      retryFilesRef.current.set(id, { file });
+      enqueueForRow(id, { file });
     }
     if (rows.length > 0) dispatch({ type: "addRows", rows });
   };
@@ -233,15 +286,25 @@ export default function App() {
     retryFilesRef.current.delete(id);
     printDelayByIdRef.current.delete(id);
     invalidateJobForRow(id);
+    // v1.3(§16.5): この行が属していた写真グループから除外する。グループが空になったら
+    // グループごと消す(非永続管理、photoIdはRowに持たせない)。
+    for (const [photoJobId, group] of photoGroupRef.current) {
+      if (!group.rowIds.includes(id)) continue;
+      const rowIds = group.rowIds.filter((rid) => rid !== id);
+      if (rowIds.length === 0) photoGroupRef.current.delete(photoJobId);
+      else photoGroupRef.current.set(photoJobId, { ...group, rowIds });
+      break;
+    }
     dispatch({ type: "removeRow", id });
   };
 
-  // 失敗行の再試行(Codexレビュー指摘I8)。Appが保持しているFileで再enqueueする。
+  // 失敗行の再試行(Codexレビュー指摘I8)。Appが保持しているRetrySourceで再enqueueする
+  // (v1.3 §16.4: `crop`があれば同じ領域だけを元解像度から再クロップする)。
   const onRetry = (id: string) => {
-    const file = retryFilesRef.current.get(id);
-    if (!file) return;
+    const source = retryFilesRef.current.get(id);
+    if (!source) return;
     dispatch({ type: "updateRow", id, patch: { processing: true, status: "failed" } });
-    enqueueForRow(id, file);
+    enqueueForRow(id, source);
   };
 
   // モデル初期化失敗時の一括リトライ。現在failedかつFileを保持している行をまとめて再試行する。
@@ -313,8 +376,51 @@ export default function App() {
     }
     retryFilesRef.current.clear();
     printDelayByIdRef.current.clear();
+    photoGroupRef.current.clear();
     seenFiles.current.clear();
     dispatch({ type: "hydrate", state: nextState });
+  };
+
+  // v1.3(§16.5): グループ内に失敗行がある・領域判定が曖昧(ambiguous)・領域数が
+  // 上限付近(nearLimit)の場合のみ、そのグループの最後の行の直後に回復導線
+  // (2ボタン)を表示する。手動の矩形編集・分割/結合UIは作らない(仕様通り)。
+  function findRecoveryGroupForRow(rowId: string): { photoJobId: string; group: PhotoGroup } | null {
+    for (const [photoJobId, group] of photoGroupRef.current) {
+      if (group.rowIds.length === 0 || group.rowIds[group.rowIds.length - 1] !== rowId) continue;
+      const hasFailed = group.rowIds.some((id) => state.rows.find((r) => r.id === id)?.status === "failed");
+      if (group.ambiguous || group.nearLimit || hasFailed) return { photoJobId, group };
+      return null;
+    }
+    return null;
+  }
+
+  /** §16.5「写真全体を1枚として読み直す」: 1枚を誤って2分割した場合の回復。
+   *  グループの行を全て削除し、同じFileを検出スキップ(forceSingle)で読み直す新しい行を追加する。 */
+  const onRereadWholePhoto = (photoJobId: string) => {
+    const group = photoGroupRef.current.get(photoJobId);
+    if (!group) return;
+    const payerId = state.rows.find((r) => group.rowIds.includes(r.id))?.payerId ?? state.people[0]?.id;
+    for (const rowId of group.rowIds) onRemove(rowId);
+    photoGroupRef.current.delete(photoJobId);
+    if (!payerId) return;
+
+    const remainingRows = state.rows.filter((r) => !group.rowIds.includes(r.id));
+    const id = crypto.randomUUID();
+    const label = nextReceiptLabel(remainingRows)(1);
+    dispatch({
+      type: "addRows",
+      rows: [{ id, payerId, amountYen: null, label, status: "failed", source: "ocr", candidates: [], processing: true }],
+    });
+    retryFilesRef.current.set(id, { file: group.file });
+    enqueueForRow(id, { file: group.file, forceSingle: true });
+  };
+
+  /** §16.5「削除して撮り直す」: 2枚を1領域に誤結合した場合の回復。グループの行を全て削除するのみ。 */
+  const onDeleteGroup = (photoJobId: string) => {
+    const group = photoGroupRef.current.get(photoJobId);
+    if (!group) return;
+    for (const rowId of group.rowIds) onRemove(rowId);
+    photoGroupRef.current.delete(photoJobId);
   };
 
   const hasPendingWork = state.rows.some((r) => r.processing);
@@ -329,9 +435,15 @@ export default function App() {
       ? "モデル準備中…"
       : ocrEvent?.kind === "processing"
         ? `画像 ${ocrEvent.current}/${ocrEvent.total} 処理中…`
-        : ocrEvent?.kind === "complete" && ocrEvent.total > 0
-          ? `完了 (${ocrEvent.done}/${ocrEvent.total})`
-          : "";
+        // v1.3(§16.4): パス1(検出)完了時、写真単位で「◯枚のレシートを見つけました」を
+        // 通知する(aria-live、既存のocr-statusと同じ領域を使う)。
+        : ocrEvent?.kind === "regionsFound"
+          ? `この写真から${ocrEvent.count}枚のレシートを見つけました`
+          : ocrEvent?.kind === "regionProcessing"
+            ? `${ocrEvent.current}/${ocrEvent.total}枚目を読取中…`
+            : ocrEvent?.kind === "complete" && ocrEvent.total > 0
+              ? `完了 (${ocrEvent.done}/${ocrEvent.total})`
+              : "";
 
   return (
     // 集計パネル(.summary-panel、画面下部固定)は<main>の中・`.receipt-paper`の外に置く
@@ -364,7 +476,7 @@ export default function App() {
             画面に占める割合=実効解像度)が失敗の最も支配的な単独要因、傾きは副次要因。
             取り込みボタン群の直下に常時表示する装飾的な案内文で、機能には影響しない。 */}
         <p className="capture-hint">
-          レシートを画面いっぱい・まっすぐ・ピントを合わせて撮ると読み取り精度が上がります
+          レシートを画面いっぱい・まっすぐ・ピントを合わせて撮ると読み取り精度が上がります。複数枚まとめて撮る場合は間隔を空けて並べてください。
         </p>
 
         {/* 切り取り線装飾(設計ドキュメント§15.4、装飾のみ・aria-hidden)。 */}
@@ -386,22 +498,41 @@ export default function App() {
 
         {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
         <ul className="receipt-list">
-          {state.rows.map((row, index) => (
-            <ReceiptRow
-              key={row.id}
-              row={row}
-              people={state.people}
-              rowNumber={index + 1}
-              printDelayMs={printDelayByIdRef.current.get(row.id) ?? 0}
-              canRetry={retryFilesRef.current.has(row.id)}
-              onPatch={(id, patch) => {
-                releaseRetryFileIfResolved(id, patch);
-                dispatch({ type: "updateRow", id, patch });
-              }}
-              onRemove={onRemove}
-              onRetry={onRetry}
-            />
-          ))}
+          {state.rows.flatMap((row, index) => {
+            const elements = [
+              <ReceiptRow
+                key={row.id}
+                row={row}
+                people={state.people}
+                rowNumber={index + 1}
+                printDelayMs={printDelayByIdRef.current.get(row.id) ?? 0}
+                canRetry={retryFilesRef.current.has(row.id)}
+                onPatch={(id: string, patch: RowPatch) => {
+                  releaseRetryFileIfResolved(id, patch);
+                  dispatch({ type: "updateRow", id, patch });
+                }}
+                onRemove={onRemove}
+                onRetry={onRetry}
+              />,
+            ];
+            // v1.3(§16.5): グループ内に失敗行がある・領域判定が曖昧・領域数が上限付近の
+            // 場合のみ、そのグループの最後の行の直後に回復導線(2ボタン)を表示する。
+            const recovery = findRecoveryGroupForRow(row.id);
+            if (recovery) {
+              elements.push(
+                <li key={`${row.id}-recovery`} className="region-group-recovery">
+                  <p>この写真の読み取りに問題があるかもしれません</p>
+                  <button type="button" onClick={() => onRereadWholePhoto(recovery.photoJobId)}>
+                    写真全体を1枚として読み直す
+                  </button>
+                  <button type="button" onClick={() => onDeleteGroup(recovery.photoJobId)}>
+                    削除して撮り直す
+                  </button>
+                </li>,
+              );
+            }
+            return elements;
+          })}
         </ul>
         <p className="tear-line" aria-hidden="true">✂ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─</p>
         <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />

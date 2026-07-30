@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within, cleanup } from "@testing-library/react";
 import type { OcrEngine } from "./ocr/engine";
 import type { RowPatch } from "./state/reducer";
-import type { QueueStatusEvent } from "./ocr/queue";
+import type { QueueStatusEvent, RegionDescriptor, RegionGroupFlags } from "./ocr/queue";
 import type { FailureKind } from "./types";
 import { STORAGE_KEY } from "./state/storage";
 import App from "./App";
@@ -47,6 +47,8 @@ vi.mock("./ocr/queue", () => ({
 
 type Cb = {
   onStatus(event: QueueStatusEvent): void;
+  // v1.3(§16.4): 複数領域検出時の通知。既存テストの大半は発火させない(単一領域のまま)。
+  onRegions?(photoJobId: string, regions: RegionDescriptor[], flags: RegionGroupFlags): void;
   onThumbnail(id: string, blob: Blob): void;
   onPreview(id: string, blob: Blob): void;
   onResult(id: string, patch: RowPatch): void;
@@ -93,6 +95,9 @@ describe("App", () => {
       (): OcrEngine => ({
         initialize: vi.fn(async () => undefined),
         recognize: vi.fn(async () => []),
+        // v1.3: OcrEngineに追加された検出専用API。App.test.tsxは`createOcrQueue`自体を
+        // モックしているため実際には呼ばれないが、`OcrEngine`型を満たすために必要。
+        detect: vi.fn(async () => []),
         destroy: engineDestroyMock,
       }),
     );
@@ -130,7 +135,11 @@ describe("App", () => {
     const { container } = render(<App />);
 
     const hint = container.querySelector(".capture-hint");
-    expect(hint?.textContent).toBe("レシートを画面いっぱい・まっすぐ・ピントを合わせて撮ると読み取り精度が上がります");
+    // v1.3(§16の実装指示): 複数枚まとめて撮る場合の撮り方ヒントを追記した
+    // (間隔を空けて並べることでXY-cutの領域分割精度が上がるため)。
+    expect(hint?.textContent).toBe(
+      "レシートを画面いっぱい・まっすぐ・ピントを合わせて撮ると読み取り精度が上がります。複数枚まとめて撮る場合は間隔を空けて並べてください。",
+    );
     // ボタン群(.add-buttons)の直後(兄弟要素)に配置されている
     expect(container.querySelector(".add-buttons")?.nextElementSibling).toBe(hint);
   });
@@ -1116,5 +1125,154 @@ describe("App", () => {
     expect((rows[0] as HTMLElement).style.animationDelay).toBe("0ms");
     expect((rows[1] as HTMLElement).style.animationDelay).toBe("60ms");
     expect((rows[2] as HTMLElement).style.animationDelay).toBe("120ms");
+  });
+
+  // --- v1.3(複数レシート自動分割、設計ドキュメント§16)の統合テスト ---
+  // queue自体はモックされているため、実際の検出・XY-cutは走らない。ここではApp.tsxが
+  // `onRegions`/`onResult`をどう配線しているか(§16.4のプレースホルダ→N行の原子的置換、
+  // 領域ごとのjobIdでのOCR結果反映)、および§16.5の回復導線を検証する。
+
+  it("onRegionsで1枚の写真がN行へ置換され、領域ごとのjobIdでOCR結果が正しい行へ反映される(§16.4)", async () => {
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    const file = new File(["photo"], "photo.jpg", { type: "image/jpeg" });
+    selectFile(fileInputs[0] as HTMLInputElement, file);
+
+    // 選択直後は1行(「レシート 1」)のまま
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+    const [photoJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    act(() => {
+      capturedCb!.onRegions!(
+        photoJobId,
+        [
+          { jobId: "region-0", crop: { x: 0, y: 0, width: 0.5, height: 1 } },
+          { jobId: "region-1", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+        ],
+        { ambiguous: false, nearLimit: false },
+      );
+    });
+
+    // プレースホルダ1行が2行へ置換され、採番は置換時に連番(「レシート 1」「レシート 2」)
+    const rows = container.querySelectorAll(".receipt-row");
+    expect(rows).toHaveLength(2);
+    expect(container.querySelectorAll(".row-label")[0].textContent).toBe("レシート 1");
+    expect(container.querySelectorAll(".row-label")[1].textContent).toBe("レシート 2");
+
+    // サムネイルも領域ごとのjobIdで正しい行へ届く(実際のqueueと同じ順序: サムネイル→OCR結果)
+    act(() => {
+      capturedCb!.onThumbnail("region-0", new Blob(["thumb-0"]));
+    });
+    expect(await screen.findByRole("button", { name: "レシート 1の画像を拡大" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "レシート 2の画像を拡大" })).toBeNull();
+
+    // 領域ごとのjobId("region-0"/"region-1")でOCR結果が届き、正しい行へ反映される
+    act(() => {
+      capturedCb!.onResult("region-0", { amountYen: 500, status: "auto-high", candidates: [], processing: false });
+      capturedCb!.onResult("region-1", { amountYen: 800, status: "needs-review", candidates: [800, 900], processing: false });
+    });
+
+    const amount1 = await screen.findByRole("button", { name: amountEditLabel("レシート 1") });
+    expect(amount1.textContent).toBe("500円");
+    const amount2 = screen.getByRole("button", { name: amountEditLabel("レシート 2") });
+    expect(amount2.textContent).toBe("800円");
+    expect(within(container.querySelectorAll(".receipt-row")[1] as HTMLElement).getByText("要確認")).toBeTruthy();
+  });
+
+  it("領域が1つ(onRegions未発火)の通常写真には§16.5の回復導線は表示されない(既存動作に退行なし)", async () => {
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["a"], "a.png"));
+    const [id] = enqueueMock.mock.calls[0] as [string, File];
+
+    act(() => {
+      capturedCb!.onResult(id, { amountYen: 1000, status: "auto-high", candidates: [], processing: false });
+    });
+
+    await screen.findByRole("button", { name: amountEditLabel("レシート 1") });
+    expect(container.querySelector(".region-group-recovery")).toBeNull();
+  });
+
+  it("写真単位の「◯枚のレシートを見つけました」通知がaria-live領域に表示される(§16.4)", () => {
+    render(<App />);
+    const status = screen.getByRole("status");
+
+    act(() => {
+      capturedCb!.onStatus({ kind: "regionsFound", count: 3 });
+    });
+    expect(status.textContent).toBe("この写真から3枚のレシートを見つけました");
+
+    act(() => {
+      capturedCb!.onStatus({ kind: "regionProcessing", current: 2, total: 3 });
+    });
+    expect(status.textContent).toBe("2/3枚目を読取中…");
+  });
+
+  it("ambiguous(§16.3安全弁)なグループには回復導線が表示され、「写真全体を1枚として読み直す」で同じFileを検出スキップで読み直す(§16.5)", async () => {
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    const file = new File(["photo"], "photo.jpg", { type: "image/jpeg" });
+    selectFile(fileInputs[0] as HTMLInputElement, file);
+    const [photoJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    act(() => {
+      capturedCb!.onRegions!(photoJobId, [{ jobId: "amb-0", crop: { x: 0, y: 0, width: 1, height: 1 } }], {
+        ambiguous: true,
+        nearLimit: false,
+      });
+    });
+    act(() => {
+      // §16.3の安全弁により、queue側で既にneeds-reviewへ格下げされた結果が届く想定
+      capturedCb!.onResult("amb-0", { amountYen: 700, status: "needs-review", candidates: [700], processing: false });
+    });
+
+    await screen.findByRole("button", { name: amountEditLabel("レシート 1") });
+    expect(screen.getByText("写真全体を1枚として読み直す")).toBeTruthy();
+    expect(screen.getByText("削除して撮り直す")).toBeTruthy();
+
+    enqueueMock.mockClear();
+    fireEvent.click(screen.getByText("写真全体を1枚として読み直す"));
+
+    // 旧行は削除され、新しい1行(同じ番号から再スタート)が追加され処理中になる
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
+    expect(container.querySelector(".row-label")?.textContent).toBe("レシート 1");
+    expect(within(container.querySelector(".receipt-row") as HTMLElement).getByText("処理中…")).toBeTruthy();
+
+    // 同じFileで、検出をスキップする(forceSingle:true)新しいjobIdをenqueueする
+    expect(enqueueMock).toHaveBeenCalledTimes(1);
+    const [newJobId, retriedFile, options] = enqueueMock.mock.calls[0] as [string, File, { forceSingle?: boolean } | undefined];
+    expect(newJobId).not.toBe(photoJobId);
+    expect(retriedFile).toBe(file);
+    expect(options?.forceSingle).toBe(true);
+
+    // 回復導線自体は(グループが解消されたため)消える
+    expect(container.querySelector(".region-group-recovery")).toBeNull();
+  });
+
+  it("「削除して撮り直す」でグループの全行が削除される(§16.5)", async () => {
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["photo"], "photo.jpg"));
+    const [photoJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    act(() => {
+      capturedCb!.onRegions!(
+        photoJobId,
+        [
+          { jobId: "region-0", crop: { x: 0, y: 0, width: 0.5, height: 1 } },
+          { jobId: "region-1", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+        ],
+        { ambiguous: false, nearLimit: true },
+      );
+      capturedCb!.onResult("region-0", { amountYen: null, status: "failed", candidates: [], processing: false });
+    });
+
+    await screen.findByText("削除して撮り直す");
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(2);
+
+    fireEvent.click(screen.getByText("削除して撮り直す"));
+
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
+    expect(container.querySelector(".region-group-recovery")).toBeNull();
   });
 });

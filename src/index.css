@@ -500,6 +500,27 @@ main {
 .row-actions button[aria-label$="削除"] { border-color: var(--stamp); }
 
 .error { color: var(--stamp-text); }
+
+/* v1.3(§16.5): 複数レシート自動分割の回復導線(グループ内に失敗行がある・領域判定が
+   曖昧・領域数が上限付近の場合のみ表示)。行区切り(ミシン目)の外側の独立した警告帯として、
+   朱色(--stamp)の枠で目立たせる。手動の矩形編集・分割/結合UIは作らない。 */
+.region-group-recovery {
+  list-style: none;
+  border: 1.5px dashed var(--stamp);
+  border-radius: var(--radius-print);
+  padding: 8px 10px;
+  margin: 4px 0 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.region-group-recovery p { margin: 0; flex: 1 1 100%; color: var(--stamp-text); font-size: 13px; }
+.region-group-recovery button {
+  min-height: 44px; padding: 6px 12px; border-radius: var(--radius-print);
+  border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink); font-weight: 700;
+}
+
 .cancel-all {
   min-height: 44px; padding: 8px 14px; margin: 4px 0 14px;
   border-radius: var(--radius-print); border: 1.5px solid var(--stamp); background: var(--paper); color: var(--ink); font-weight: 700;
