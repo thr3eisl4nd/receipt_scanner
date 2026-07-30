@@ -98,7 +98,7 @@ describe("createOcrQueue", () => {
     });
   });
 
-  it("failedなら補正版で再試行する(失敗時のみではなくauto-high以外は常に再試行)", async () => {
+  it("failedかつ行数不足(sparse)なら補正版で再試行する(I5: failedのみ行数・confidenceゲートを適用)", async () => {
     const deps = makeDeps();
     const engine = makeEngine(() => [line()]);
     extractTotalMock
@@ -142,18 +142,16 @@ describe("createOcrQueue", () => {
     });
   });
 
-  // --- [仮説C] コントラスト再試行のゲート(.superpowers/sdd/ocr-investigation.md Phase3仮説C)の回帰テスト ---
-  // 従来は`status !== "auto-high"`のみで無条件に2回目のOCRを実行していたが、調査により
-  // 「1回目のconfidenceが十分高く行数も十分あるのに読みにくい画像と誤判定して再試行し、
-  // 処理時間だけが倍になる」ケースが判明した。1回目の認識行数・平均confidenceで
-  // 「本当に読みにくい画像か」を判別し、そうでなければ2回目を省略する。
-
-  it("高confidence・多数行のneeds-reviewでは再試行しない(仮説Cゲート: 行数十分・平均confidence十分高い)", async () => {
+  it("1回目がfailedでも補正版がneeds-reviewに改善したら採用する(Codexレビュー指摘I4)", async () => {
+    // 従来は「補正版がauto-highの場合のみ採用」だったため、[仮説A]の弱ラベル経由で
+    // 設計上needs-review止まりの回復(1回目failed→補正後「合」+「¥788」がneeds-review
+    // として読める)を取り逃し、failedのまま結果を返していた。ランク比較(failed(0) <
+    // needs-review(1))により改善判定できるようにする。
     const deps = makeDeps();
-    // 20行、全行confidence0.95(平均0.95 >= 閾値0.85、行数20 >= 閾値15) → ゲートは「再試行不要」と判定するはず
-    const manyHighConfLines = Array.from({ length: 20 }, () => lineWithConfidence(0.95));
-    const engine = makeEngine(() => manyHighConfLines);
-    extractTotalMock.mockReturnValue(resultOf("needs-review", 900, [900, 950]));
+    const engine = makeEngine(() => [line()]);
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("failed", null, []))
+      .mockReturnValueOnce(resultOf("needs-review", 788, [788]));
 
     const onResult = vi.fn();
     const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
@@ -161,21 +159,35 @@ describe("createOcrQueue", () => {
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
 
-    expect(engine.recognize).toHaveBeenCalledTimes(1);
-    expect(deps.enhanceContrast).not.toHaveBeenCalled();
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
     expect(onResult).toHaveBeenCalledWith("a", {
-      amountYen: 900,
+      amountYen: 788,
       status: "needs-review",
-      candidates: [900, 950],
+      candidates: [788],
       processing: false,
     });
   });
 
-  it("行数が十分でも平均confidenceが閾値未満なら再試行する(仮説Cゲート)", async () => {
+  // --- [仮説C] コントラスト再試行のゲート(.superpowers/sdd/ocr-investigation.md Phase3仮説C)の回帰テスト ---
+  // 従来は`status !== "auto-high"`のみで無条件に2回目のOCRを実行していたが、調査により
+  // 「1回目のconfidenceが十分高く行数も十分あるのに読みにくい画像と誤判定して再試行し、
+  // 処理時間だけが倍になる」ケースが判明した。1回目の認識行数・平均confidenceで
+  // 「本当に読みにくい画像か」を判別し、そうでなければ2回目を省略する。
+  //
+  // Codexレビュー指摘I5により、この行数・平均confidenceによるゲートは`failed`にのみ
+  // 適用するよう変更した(`needs-review`は無条件で常に再試行する。全行平均には
+  // 抽出判断に無関係な行のconfidenceも含まれ、合計ラベル自体の低confidenceが埋もれて
+  // 再試行を取り逃すケースがあったため、`needs-review`側は安全側に倒した)。
+  // 以下のゲート系テストは、この変更に伴い`firstResult`のstatusを`failed`に統一した
+  // (`needs-review`のままだと行数・confidenceの値に関わらず常に再試行されてしまい、
+  // ゲート自体を検証できなくなるため)。
+
+  it("needs-reviewは行数・平均confidenceに関わらず常に再試行する(Codexレビュー指摘I5)", async () => {
     const deps = makeDeps();
-    // 20行(閾値15以上)だが全行confidence0.7(平均0.7 < 閾値0.85) → 再試行が発火するはず
-    const manyLowConfLines = Array.from({ length: 20 }, () => lineWithConfidence(0.7));
-    const engine = makeEngine(() => manyLowConfLines);
+    // 20行、全行confidence0.95(行数・confidenceともゲート的には「再試行不要」水準)でも、
+    // needs-reviewである以上は無条件に再試行するはず。
+    const manyHighConfLines = Array.from({ length: 20 }, () => lineWithConfidence(0.95));
+    const engine = makeEngine(() => manyHighConfLines);
     extractTotalMock
       .mockReturnValueOnce(resultOf("needs-review", 900, [900, 950]))
       .mockReturnValueOnce(resultOf("auto-high", 950, [950]));
@@ -196,13 +208,37 @@ describe("createOcrQueue", () => {
     });
   });
 
-  it("行数が閾値未満なら平均confidenceが高くても再試行する(仮説Cゲート: 行数不足のsparse判定)", async () => {
+  it("failedで高confidence・多数行なら再試行しない(仮説Cゲート改訂I5: gateはfailedのみに適用)", async () => {
     const deps = makeDeps();
-    // 5行(閾値15未満)、全行confidence0.95(平均は高い) → 行数不足で再試行が発火するはず
-    const fewHighConfLines = Array.from({ length: 5 }, () => lineWithConfidence(0.95));
-    const engine = makeEngine(() => fewHighConfLines);
+    // 20行、全行confidence0.95(平均0.95 >= 閾値0.85、行数20 >= 閾値15) → ゲートは「再試行不要」と判定するはず
+    const manyHighConfLines = Array.from({ length: 20 }, () => lineWithConfidence(0.95));
+    const engine = makeEngine(() => manyHighConfLines);
+    extractTotalMock.mockReturnValue(resultOf("failed", null, []));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(engine.recognize).toHaveBeenCalledTimes(1);
+    expect(deps.enhanceContrast).not.toHaveBeenCalled();
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: null,
+      status: "failed",
+      candidates: [],
+      processing: false,
+      failureKind: "ocr", // I1: 通常経路のfailedにもfailureKindが付く
+    });
+  });
+
+  it("failedで行数が十分でも平均confidenceが閾値未満なら再試行する(仮説Cゲート改訂I5)", async () => {
+    const deps = makeDeps();
+    // 20行(閾値15以上)だが全行confidence0.7(平均0.7 < 閾値0.85) → 再試行が発火するはず
+    const manyLowConfLines = Array.from({ length: 20 }, () => lineWithConfidence(0.7));
+    const engine = makeEngine(() => manyLowConfLines);
     extractTotalMock
-      .mockReturnValueOnce(resultOf("needs-review", 900, [900, 950]))
+      .mockReturnValueOnce(resultOf("failed", null, []))
       .mockReturnValueOnce(resultOf("auto-high", 950, [950]));
 
     const onResult = vi.fn();
@@ -213,6 +249,115 @@ describe("createOcrQueue", () => {
 
     expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
     expect(engine.recognize).toHaveBeenCalledTimes(2);
+    expect(onResult).toHaveBeenCalledWith("a", {
+      amountYen: 950,
+      status: "auto-high",
+      candidates: [950],
+      processing: false,
+    });
+  });
+
+  it("failedで行数が閾値未満なら平均confidenceが高くても再試行する(仮説Cゲート改訂I5: 行数不足のsparse判定)", async () => {
+    const deps = makeDeps();
+    // 5行(閾値15未満)、全行confidence0.95(平均は高い) → 行数不足で再試行が発火するはず
+    const fewHighConfLines = Array.from({ length: 5 }, () => lineWithConfidence(0.95));
+    const engine = makeEngine(() => fewHighConfLines);
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("failed", null, []))
+      .mockReturnValueOnce(resultOf("auto-high", 950, [950]));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
+    expect(engine.recognize).toHaveBeenCalledTimes(2);
+  });
+
+  // --- Minor: averageConfidenceの非有限値防御・境界値の回帰テスト ---
+  // 全行平均confidenceに1件でもNaN/Infinityが混ざると、防御がない場合
+  // `NaN < 0.85`/`Infinity < 0.85`は共にfalseになり、再試行を誤ってスキップしてしまう
+  // (failedかつ行数がRETRY_MIN_LINES以上のケースでのみ顕在化する)。
+
+  it("0行なら再試行する(境界値: 現在の実装通り、行数不足でsparse判定)", async () => {
+    const deps = makeDeps();
+    const engine = makeEngine(() => []); // recognizeが0行を返す
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("failed", null, []))
+      .mockReturnValueOnce(resultOf("auto-high", 700, [700]));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
+  });
+
+  it("ちょうど15行・平均confidenceちょうど0.85なら再試行しない(境界値、仕様通り)", async () => {
+    const deps = makeDeps();
+    // 15行全部を0.85にすると浮動小数点の反復加算誤差で平均が0.85よりわずかに
+    // 小さくなってしまう(0.85は2進数で正確に表現できないため)。1.0(12行)と
+    // 0.25(3行)は2進数で正確に表現できる値なので、合計12.75・平均0.85が
+    // ビット単位で正確に0.85になる組み合わせを使う。
+    const exactBoundaryLines = [
+      ...Array.from({ length: 12 }, () => lineWithConfidence(1.0)),
+      ...Array.from({ length: 3 }, () => lineWithConfidence(0.25)),
+    ];
+    const engine = makeEngine(() => exactBoundaryLines);
+    extractTotalMock.mockReturnValue(resultOf("failed", null, []));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(engine.recognize).toHaveBeenCalledTimes(1);
+    expect(deps.enhanceContrast).not.toHaveBeenCalled();
+  });
+
+  it("平均confidence計算にNaNが混ざると再試行する(Minor: 非有限値は0扱いにする安全弁)", async () => {
+    const deps = makeDeps();
+    const linesWithNaN = [
+      ...Array.from({ length: 14 }, () => lineWithConfidence(0.99)),
+      lineWithConfidence(NaN),
+    ];
+    const engine = makeEngine(() => linesWithNaN);
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("failed", null, []))
+      .mockReturnValueOnce(resultOf("auto-high", 700, [700]));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
+  });
+
+  it("平均confidence計算にInfinityが混ざると再試行する(Minor: 非有限値は0扱いにする安全弁)", async () => {
+    const deps = makeDeps();
+    const linesWithInfinity = [
+      ...Array.from({ length: 14 }, () => lineWithConfidence(0.99)),
+      lineWithConfidence(Infinity),
+    ];
+    const engine = makeEngine(() => linesWithInfinity);
+    extractTotalMock
+      .mockReturnValueOnce(resultOf("failed", null, []))
+      .mockReturnValueOnce(resultOf("auto-high", 700, [700]));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(deps.enhanceContrast).toHaveBeenCalledTimes(1);
   });
 
   it("処理後にcanvasを明示解放する(width/height=1)。再試行時はenhanced版も解放する", async () => {
@@ -317,6 +462,30 @@ describe("createOcrQueue", () => {
 
     await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(3));
     expect(engine.initialize).toHaveBeenCalledTimes(1);
+  });
+
+  it("通常経路(例外なし)でextractTotalがfailedを返した場合もfailureKind:'ocr'を付与する(Codexレビュー指摘I1)", async () => {
+    // 従来は例外catch経由のfailedにしかfailureKindが付かず、「OCRは成功したが合計を
+    // 抽出できない」という主症状(通常経路のfailed)では撮り直し案内が表示されなかった。
+    const deps = makeDeps();
+    const engine = makeEngine(() => [line()]);
+    // 1回目・2回目とも(再試行しても)failedのままにして、例外を経由せず
+    // 通常経路でstatus:"failed"が確定するケースを再現する。
+    extractTotalMock.mockReturnValue(resultOf("failed", null, []));
+
+    const onResult = vi.fn();
+    const queue = createOcrQueue(engine, { onStatus: vi.fn(), onResult, onThumbnail: vi.fn(), onPreview: vi.fn() }, deps);
+    queue.enqueue("a", new File([""], "a.png"));
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenCalled());
+
+    expect(onResult).toHaveBeenCalledWith(
+      "a",
+      expect.objectContaining({
+        status: "failed",
+        failureKind: "ocr",
+      }),
+    );
   });
 
   it("recognizeが例外を投げた場合、failedとして結果を返す(候補行の中断ではない)", async () => {

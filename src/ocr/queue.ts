@@ -83,11 +83,13 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
  * (status/amountYen)を変えたケースは無かった(常に同じ結果に収束していた)ため、
  * 「本当に読みにくい画像」だけに再試行を絞ることで精度を落とさずに処理時間を削減できる。
  *
- * ゲート条件: 1回目の認識行数が`RETRY_MIN_LINES`未満、**または**1回目の平均confidenceが
- * `RETRY_MAX_AVG_CONFIDENCE`未満の場合のみ再試行する。confidence統計値は「平均
- * (confStat=avg)」を採用する。「最良の1行(confStat=max)」で試したところ、劣化画像でも
- * ヘッダー/フッター等の読みやすい行が1つは残るためほぼ常に閾値を超えてしまい、
- * ゲートの判別力が失われることを調査で確認したため。
+ * ゲート条件(`failed`のみに適用。Codexレビュー指摘I5で`needs-review`は無条件再試行に
+ * 変更したため、詳細は`shouldRetryWithContrast`のdocを参照): 1回目の認識行数が
+ * `RETRY_MIN_LINES`未満、**または**1回目の平均confidenceが`RETRY_MAX_AVG_CONFIDENCE`
+ * 未満の場合のみ再試行する。confidence統計値は「平均(confStat=avg)」を採用する。
+ * 「最良の1行(confStat=max)」で試したところ、劣化画像でもヘッダー/フッター等の
+ * 読みやすい行が1つは残るためほぼ常に閾値を超えてしまい、ゲートの判別力が失われる
+ * ことを調査で確認したため。
  *
  * 閾値(行数15・平均confidence0.85)は調査で使った合成劣化データセットに基づく初期値であり、
  * 実機データでの再チューニングが必要(調査レポート「Phase 3: 仮説C」の限界節を参照)。
@@ -95,20 +97,55 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
 const RETRY_MIN_LINES = 15;
 const RETRY_MAX_AVG_CONFIDENCE = 0.85;
 
+/**
+ * 行confidenceの平均値。非有限値(`NaN`/`Infinity`)への防御(Codexレビュー指摘Minor)。
+ *
+ * 本番の`mapRecognitionResult.ts`はconfidenceを`[0,1]`へ正規化するため現行エンジンでは
+ * 顕在化しないが、`createOcrQueue`は任意の`OcrEngine`を受け入れるため境界で防御する。
+ * 1件でも非有限値があれば全体を0扱いにする(NaNはそのままだと平均もNaNになり
+ * `NaN < RETRY_MAX_AVG_CONFIDENCE`が常にfalseとなって再試行を誤ってスキップし、
+ * Infinityも同様に平均がInfinityとなって同じ問題を起こすため)。
+ */
 function averageConfidence(lines: OcrLine[]): number {
   if (lines.length === 0) return 0;
-  return lines.reduce((sum, l) => sum + l.confidence, 0) / lines.length;
+  let sum = 0;
+  for (const line of lines) {
+    if (!Number.isFinite(line.confidence)) return 0;
+    sum += Math.min(1, Math.max(0, line.confidence));
+  }
+  return sum / lines.length;
 }
 
 /**
- * 1回目の認識結果からコントラスト再試行が必要かを判定する。
- * `status === "auto-high"`は従来通り無条件に再試行しない(既に成功しているため)。
+ * 1回目の認識結果からコントラスト再試行が必要かを判定する(Codexレビュー指摘I5)。
+ *
+ * - `auto-high`: 既に成功しているため無条件に再試行しない(従来通り)。
+ * - `needs-review`: 無条件に常に再試行する。[仮説A]の弱ラベル経由の候補は設計上
+ *   `needs-review`止まりのため、行数・平均confidenceによるゲートで再試行を
+ *   スキップしてしまうと、コントラスト補正で改善しうるケースを取り逃す
+ *   (全行平均には抽出判断に無関係な行のconfidenceも含まれ、合計ラベル自体の
+ *   低confidenceが埋もれるため)。
+ * - `failed`: 行数・平均confidenceによるゲートを適用する(従来の[仮説C]ゲート)。
+ *   1回目の認識行数が`RETRY_MIN_LINES`未満、**または**平均confidenceが
+ *   `RETRY_MAX_AVG_CONFIDENCE`未満の場合のみ再試行する。
  */
 function shouldRetryWithContrast(status: ExtractResult["status"], lines: OcrLine[]): boolean {
   if (status === "auto-high") return false;
+  if (status === "needs-review") return true;
+
   if (lines.length < RETRY_MIN_LINES) return true;
   return averageConfidence(lines) < RETRY_MAX_AVG_CONFIDENCE;
 }
+
+/**
+ * `ExtractResult["status"]`の「良さ」の順位(Codexレビュー指摘I4)。
+ * コントラスト再試行の採用条件に使う: 数値が大きいほど良い結果。
+ */
+const STATUS_RANK: Record<ExtractResult["status"], number> = {
+  failed: 0,
+  "needs-review": 1,
+  "auto-high": 2,
+};
 
 /**
  * キャンセル/初期化失敗/例外時の一律失敗patch。
@@ -274,19 +311,20 @@ export function createOcrQueue(
 
       let result = firstResult;
       if (shouldRetryWithContrast(firstResult.status, firstLines)) {
-        // 二段階前処理: [仮説C]のゲートに従い、1回目が読みにくい(行数が少ない、
-        // または平均confidenceが低い)場合のみコントラスト補正で再試行する
-        // (「failedのみ再試行」ではなく、needs-reviewも含めて再試行しうる。
-        // Task 4スパイクのpickBestAttempt方針と揃えている)。
+        // 二段階前処理: [仮説C]+Codexレビュー指摘I5のゲートに従い、`needs-review`は
+        // 常に、`failed`は行数が少ない・平均confidenceが低い場合のみコントラスト補正で
+        // 再試行する(`auto-high`は既にshouldRetryWithContrastでfalseになっている)。
         // 再試行自体(補正処理/2回目認識)が例外を投げても、1回目の有効な結果を
         // 失わないようbest-effortとして扱う(Codexレビュー指摘: 再試行失敗で
         // 元結果ごと失われるのを防ぐ)。
         try {
           enhanced = deps.enhanceContrast(canvas);
           const secondResult = extractTotal(await engine.recognize(enhanced));
-          // 補正版がauto-highになった場合のみ採用し、そうでなければ元結果を維持する
-          // (補正で悪化するケースへの対策。補正版が常に優れているとは限らない)。
-          if (secondResult.status === "auto-high") result = secondResult;
+          // ステータスが改善した場合のみ採用する(Codexレビュー指摘I4)。
+          // 従来は「補正版がauto-highの場合のみ採用」だったため、[仮説A]の弱ラベル経由で
+          // 設計上needs-review止まりの回復(例: failed → needs-review)を取り逃していた。
+          // 改善していない場合(補正で悪化する/変わらないケース)は元結果を維持する。
+          if (STATUS_RANK[secondResult.status] > STATUS_RANK[result.status]) result = secondResult;
         } catch (retryErr) {
           console.error("OCR retry failed, keeping first result:", item.file.name, retryErr);
         }
@@ -297,6 +335,11 @@ export function createOcrQueue(
         status: result.status,
         candidates: result.candidates,
         processing: false,
+        // 通常経路(例外を投げず`extractTotal`がfailedを返した場合)にも撮り直し案内を
+        // 表示できるようfailureKindを付与する(Codexレビュー指摘I1)。従来は例外catch経由の
+        // failedにしかfailureKind:"ocr"が付かず、「OCRは成功したが合計を抽出できない」という
+        // 主症状で撮り直し案内が到達不能だった。
+        failureKind: result.status === "failed" ? "ocr" : undefined,
       };
     } catch (err) {
       console.error("OCR failed:", item.file.name, err);

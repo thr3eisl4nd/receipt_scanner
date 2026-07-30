@@ -7,6 +7,18 @@ export type ExtractResult = {
   candidates: number[];
 };
 
+/**
+ * ラベル行の一致種別(Codexレビュー指摘I3)。
+ *
+ * - `exact`: `STRONG_LABELS`に完全一致(「合計」「お会計」等)。
+ * - `corrupted`: `STRONG_LABEL_CORRUPTED_VARIANTS`に一致する観測済みの字形崩れ
+ *   (「含計」「台計」等)。スコアは`exact`と同じ(+50/+40)だが、auto-highの対象には
+ *   ならない(下記`eligible`判定を参照)。
+ * - `fuzzy`: `isWeakLabelLine`が真になる弱ラベル(「合」単独)。スコアが低く抑えられ、
+ *   auto-highの対象にもならない。
+ */
+type LabelKind = "exact" | "corrupted" | "fuzzy";
+
 const STRONG_LABELS = [
   /(?:税込|総)?合計/,
   /お?買上(?:げ)?(?:計|金額)/,
@@ -23,6 +35,13 @@ const STRONG_LABELS = [
  * 特徴的な2文字の並びのため無関係な語との誤爆リスクが低い。通常のSTRONG_LABELSと
  * 完全に同じスコア(+50/+40)で扱ってよいと調査で判断された(Phase3仮説A考察: A1構成で
  * 既存回帰・敵対的ケースともに安全性を確認済み)。
+ *
+ * ただし、字形崩れである以上「合計」以外の語を誤って拾っている可能性を完全には
+ * 排除できないため、auto-highへの自動確定は許可しない(Codexレビュー指摘I3)。
+ * 通貨記号すら不要な入力(例:「台計」+「3」)で60点に達し得ることが判明したため、
+ * `LabelKind`を`exact`/`corrupted`/`fuzzy`に分離し、`eligible`判定で`exact`のみを
+ * auto-high対象にする安全弁を設けた。`failed → needs-review`の回復効果自体は
+ * auto-highを許可しなくても維持される。
  */
 const STRONG_LABEL_CORRUPTED_VARIANTS = [/含計/, /合针/, /合计/, /台計/];
 
@@ -41,9 +60,16 @@ const REJECT_LABELS = [
 const AUTO_HIGH_MIN_CONFIDENCE = 0.9;
 
 /**
- * [仮説A]段階2+3: 「合」「計」の単独文字、および短い行(3文字以下)限定の編集距離1以内の
- * ゆるい照合を、通常より弱い「弱ラベル」として許容するためのスコア(調査由来、
- * Phase3仮説A)。
+ * [仮説A]段階2: 「合」の単独文字(「合計」の2文字目「計」が実機で脱落した崩れ、調査
+ * Phase1 7.2節の実データで観測済み)のみを、通常より弱い「弱ラベル」として許容するための
+ * スコア。
+ *
+ * 従来は「計」単独、および短い行(3文字以下)限定で「合計」への編集距離1以内のゆるい
+ * 照合も許容していたが、Codexレビュー指摘I2により廃止した。「計」は「3点計」のような
+ * 数量表記の一部としても頻出する一般的な1文字で、OCRが2boxへ分割すると無関係な数量
+ * (例:「計」+「3点」)を金額候補へ格上げしてしまう。編集距離1のゆるい照合も
+ * 「累計」「商品計」のような一般語まで拾ってしまうため、実機で実際に観測された
+ * 「合」の単独脱落だけを許可する。
  *
  * 弱ラベル経由で到達しうる最大スコアは
  * `WEAK_LABEL_NEAR_SCORE(20) + 円記号(10) + 位置ボーナス(5) + confidence満点(10) = 45`で、
@@ -53,47 +79,26 @@ const AUTO_HIGH_MIN_CONFIDENCE = 0.9;
  * 変わった場合にも壊れない明示的な不変条件」として、下記`eligible`判定でも弱ラベル経由を
  * 明示的にauto-high対象外にする(調査レポート推奨の安全弁、暗黙の偶然の安全性に
  * 依存しない設計)。
+ *
+ * 加えて、弱ラベル経由の金額候補は通貨表記(¥/￥/円)を必須とする(Codexレビュー指摘I2)。
+ * `findMoneyTokens`はカンマ/円記号なしの裸の数字(「3点」の「3」等)もトークンとして
+ * 拾うため、通貨表記がない場合は弱ラベルとの関連付け自体を無効にし、「計 3点」のような
+ * 一般的な数量表記が金額候補へ紛れ込むのを防ぐ。
  */
 const WEAK_LABEL_NEAR_SCORE = 20;
 const WEAK_LABEL_BELOW_SCORE = 15;
 
-/** 「合計」に対する編集距離1以内のゆるい照合を許容する対象文字列(段階3)。 */
-const FUZZY_WEAK_TARGET = "合計";
-/** ゆるい照合の対象を誤爆が起きやすい長い行へ広げないための文字数上限。 */
-const FUZZY_WEAK_MAX_LENGTH = 3;
-
-/** レーベンシュタイン距離。短い文字列(FUZZY_WEAK_MAX_LENGTH以下)専用のため素朴なDPで十分。 */
-function levenshteinDistance(a: string, b: string): number {
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () => Array.from({ length: b.length + 1 }, () => 0));
-  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
-  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      dp[i][j] =
-        a[i - 1] === b[j - 1]
-          ? dp[i - 1][j - 1]
-          : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
-    }
-  }
-  return dp[a.length][b.length];
-}
-
 /**
- * [仮説A]段階2(単独文字)+段階3(ゆるい照合)。「合計」の崩れとして弱ラベル扱いする行か。
+ * [仮説A]段階2。「合」の単独脱落として弱ラベル扱いする行か。
  *
- * 安全弁(調査Phase3仮説A「fuzzyExcludeRejectMatches」相当): REJECT_LABELS
- * (「小計」等)に一致する行は、編集距離が近くても弱ラベルとして扱わない。
- * 「小計」は「合計」と編集距離1(調査で使った敵対的ケース: 合計ラベルが完全消失し
- * 小計だけが残るケース)だが、REJECT_LABELSとの同一行ペナルティ(-100)を弱ラベル
- * 経由で回避されると誤爆に繋がりうるため明示的に除外する。
+ * 安全弁(調査Phase3仮説A「fuzzyExcludeRejectMatches」相当): REJECT_LABELSに一致する
+ * 行は弱ラベルとして扱わない。
  */
 function isWeakLabelLine(normalizedText: string): boolean {
   const t = normalizedText.trim();
   if (t.length === 0) return false;
   if (REJECT_LABELS.some((re) => re.test(t))) return false;
-  if (t === "合" || t === "計") return true;
-  if (t.length <= FUZZY_WEAK_MAX_LENGTH && levenshteinDistance(t, FUZZY_WEAK_TARGET) <= 1) return true;
-  return false;
+  return t === "合"; // 実機で観測済みの脱落のみ許可(Codexレビュー指摘I2)
 }
 
 type RawCandidate = {
@@ -102,6 +107,8 @@ type RawCandidate = {
   line: OcrLine;
   /** このスコアの根拠になった強ラベル行 */
   strongSource: OcrLine;
+  /** strongSourceの一致種別(Codexレビュー指摘I3)。auto-high可否は`exact`のみ許可する。 */
+  labelKind: LabelKind;
   /** nearStrong(同一行)ではなくbelowStrong(直下1〜2行)経由で拾った候補か */
   viaBelowStrong: boolean;
   /** 強ラベルと除外語が同一OcrLineに同居 or 1行に複数金額 → auto-high不可 */
@@ -211,22 +218,31 @@ export function extractTotal(lines: OcrLine[]): ExtractResult {
   const maxY = Math.max(...lines.map((l) => l.box.y + l.box.height));
   const midY = minY + (maxY - minY) / 2;
   const norm = (t: string) => t.normalize("NFKC");
-  const strongLines = lines.filter(
-    (l) =>
-      STRONG_LABELS.some((re) => re.test(norm(l.text))) ||
-      STRONG_LABEL_CORRUPTED_VARIANTS.some((re) => re.test(norm(l.text))),
+  // ラベル種別(Codexレビュー指摘I3)を排他的に判定する: exact優先、次にcorrupted、
+  // どちらでもない場合のみ弱ラベル(fuzzy)候補になり得る。
+  const exactLines = lines.filter((l) => STRONG_LABELS.some((re) => re.test(norm(l.text))));
+  const exactSet = new Set(exactLines);
+  const corruptedLines = lines.filter(
+    (l) => !exactSet.has(l) && STRONG_LABEL_CORRUPTED_VARIANTS.some((re) => re.test(norm(l.text))),
   );
+  const corruptedSet = new Set(corruptedLines);
   const rejectLines = lines.filter((l) => REJECT_LABELS.some((re) => re.test(norm(l.text))));
+  const strongLines = [...exactLines, ...corruptedLines];
   const strongSet = new Set(strongLines);
   const rejectSet = new Set(rejectLines);
-  // [仮説A]段階2/3: 強ラベルに一致しなかった行のうち、弱ラベル(単独文字/ゆるい照合)に
+  // [仮説A]段階2: 強ラベル(exact/corrupted)に一致しなかった行のうち、弱ラベル(「合」単独)に
   // 該当するものを別途集める。同一行判定(nearestStrongSameRow/Above)は強・弱を区別せず
   // 幾何的な近さで選ぶため、両方を1つのプールとして渡す(強弱の判定はスコア計算時に
-  // `weakSet.has(strongSource)`で行う)。
+  // `labelKindOf(strongSource)`で行う)。
   const weakLines = lines.filter((l) => !strongSet.has(l) && isWeakLabelLine(norm(l.text)));
-  const weakSet = new Set(weakLines);
   const labelLines = [...strongLines, ...weakLines];
   const moneyLines = lines.filter((l) => findMoneyTokens(l.text).length > 0);
+
+  function labelKindOf(l: OcrLine): LabelKind {
+    if (exactSet.has(l)) return "exact";
+    if (corruptedSet.has(l)) return "corrupted";
+    return "fuzzy";
+  }
 
   const raw: RawCandidate[] = [];
   for (const line of lines) {
@@ -241,7 +257,13 @@ export function extractTotal(lines: OcrLine[]): ExtractResult {
     }
     if (strongSource === undefined) continue;
     const nearStrong = !viaBelowStrong;
-    const isWeakSource = weakSet.has(strongSource);
+    const labelKind = labelKindOf(strongSource);
+    const isWeakSource = labelKind === "fuzzy";
+
+    // [仮説A]弱ラベル経由の金額候補は通貨表記(¥/￥/円)を必須にする(Codexレビュー指摘I2)。
+    // `findMoneyTokens`は裸の数字("3点"の"3"等)も拾うため、通貨表記がなければ弱ラベルとの
+    // 関連付け自体を無効にする(この行はcontinueで丸ごとスキップする)。
+    if (isWeakSource && !/[¥￥円]/.test(norm(line.text))) continue;
 
     // 除外ラベルとの同一行判定。ただし自分自身(line)が強ラベルでもある場合、
     // 自分自身との一致だけでは減点しない(強ラベル+除外語の同居はsameLineBlockedで扱う)。
@@ -270,7 +292,7 @@ export function extractTotal(lines: OcrLine[]): ExtractResult {
     if (score <= 0) continue;
 
     for (const amountYen of tokens) {
-      raw.push({ amountYen, score, line, strongSource, viaBelowStrong, sameLineBlocked });
+      raw.push({ amountYen, score, line, strongSource, labelKind, viaBelowStrong, sameLineBlocked });
     }
   }
 
@@ -291,10 +313,13 @@ export function extractTotal(lines: OcrLine[]): ExtractResult {
 
   let eligible =
     !top.sameLineBlocked &&
-    // [仮説A]安全弁: 弱ラベル(単独文字/ゆるい照合)経由の候補は明示的にauto-high対象外にする。
-    // スコア設計上45<60で既に到達不能だが、将来スコア式が変わっても壊れない不変条件として
-    // 明示する(調査レポート推奨)。
-    !weakSet.has(top.strongSource) &&
+    // [仮説A]安全弁 + Codexレビュー指摘I3: auto-highの対象は`exact`(完全一致の強ラベル)
+    // 経由の候補のみに限定する。弱ラベル(fuzzy)はスコア設計上45<60で既に到達不能だが、
+    // 将来スコア式が変わっても壊れない不変条件として明示する(調査レポート推奨)。
+    // `corrupted`(字形崩れバリアント)は`exact`と同じスコアで60点に到達しうる
+    // (例:「台計」+ 通貨表記なしの数字で60点)ため、明示的に対象外にする必要がある
+    // ("failed → needs-review"の回復効果自体はauto-highを許可しなくても維持される)。
+    top.labelKind === "exact" &&
     top.line.confidence >= AUTO_HIGH_MIN_CONFIDENCE &&
     top.strongSource.confidence >= AUTO_HIGH_MIN_CONFIDENCE;
 

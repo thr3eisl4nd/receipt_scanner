@@ -125,16 +125,28 @@ describe("extractTotal", () => {
 
   // --- [仮説A] ラベルのOCR崩れ耐性(.superpowers/sdd/ocr-investigation.md Phase3仮説A)---
   // 調査で観測された「合計」のOCR誤認識パターンへの耐性を検証する。段階1(観測済み崩れ
-  // バリアント)は通常の強ラベルと同じ扱い、段階2/3(単独文字・ゆるい照合)は弱い加点に留め、
-  // どの経路でもauto-highの60点に届かないスコア設計であること(誤自動確定の数学的防止)も
-  // あわせて確認する。
+  // バリアント: 含計/合针/合计/台計)は通常の強ラベルと同スコア(+50/+40)で扱うが、
+  // Codexレビュー指摘I3によりauto-highの対象からは除外する(`labelKind === "exact"`のみ
+  // 許可)。段階2(「合」単独)は弱い加点に留め、どの経路でもauto-highの60点に届かない
+  // スコア設計であること(誤自動確定の数学的防止)もあわせて確認する。「計」単独・
+  // 編集距離1のゆるい照合はCodexレビュー指摘I2により廃止した(下記の敵対テストを参照)。
 
-  test("観測済みの崩れバリアント(含計/合针/合计/台計)は通常の強ラベルと同じくauto-highになりうる", () => {
+  test("観測済みの崩れバリアント(含計/合针/合计/台計)はneeds-reviewまで回復するが、auto-highにはならない(Codexレビュー指摘I3)", () => {
+    // 字形崩れである以上「合計」以外の語を誤って拾っている可能性を排除できないため、
+    // auto-highへの自動確定は許可しない。failed→needs-reviewの回復効果自体は維持される
+    // (amountYenが漏れずcandidatesの1位に来ること)。
     for (const variant of ["含計", "合针", "合计", "台計"]) {
       const r = extractTotal([line(variant, 140), line("¥1,332", 140, 200)]);
-      expect(r.status).toBe("auto-high");
+      expect(r.status).toBe("needs-review");
       expect(r.amountYen).toBe(1332);
     }
+  });
+
+  test("敵対テスト: 「台計」+ 通貨表記なしの数字はauto-highにならない(Codexレビュー指摘I3: 通貨記号すら不要な60点で自動確定していた穴)", () => {
+    // 崩れバリアントは通常の強ラベルと同スコア(+50)で扱われるため、通貨記号がなくても
+    // 50(nearStrong) + confidence満点10 = 60点に達し、修正前はauto-highになってしまっていた。
+    const r = extractTotal([line("台計", 100, 0, 0.95), line("3", 100, 200, 0.95)]);
+    expect(r.status).not.toBe("auto-high");
   });
 
   test("「合」単独(調査で観測した崩れケース、¥788)はneeds-review・788が候補1位になる", () => {
@@ -152,16 +164,49 @@ describe("extractTotal", () => {
     expect(r.candidates[0]).toBe(788);
   });
 
-  test("「計」単独でも同様にneeds-review止まりで拾える(auto-highにはならない)", () => {
+  test("「計」単独はもう弱ラベルとして扱わない(Codexレビュー指摘I2: 廃止)", () => {
+    // 「計」は「3点計」のような数量表記の一部としても頻出する一般的な1文字であり、
+    // 弱ラベルとして許容すると無関係な数量を金額候補へ格上げしてしまう(下記の
+    // 「計 3点」敵対テストを参照)。実機で観測された脱落パターンは「合」の単独脱落のみ
+    // だったため、「計」単独はラベルとして一致せず候補自体が生成されない(failed)。
     const r = extractTotal([line("計", 140), line("¥788", 140, 200)]);
-    expect(r.status).toBe("needs-review");
-    expect(r.amountYen).toBe(788);
+    expect(r.status).toBe("failed");
+    expect(r.amountYen).toBeNull();
   });
 
-  test("短い行に限定したゆるい照合(編集距離1)でも「合計」の崩れを拾える(例: 合訃)", () => {
+  test("編集距離1のゆるい照合はもう行わない(Codexレビュー指摘I2: 廃止、例: 合訃)", () => {
+    // 「合訃」は「合計」への編集距離1(段階3のゆるい照合対象)だったが、対象を広げすぎて
+    // いたため廃止した。「合訃」全体は「合」と完全一致しないため弱ラベルにも該当せず、
+    // ラベルとして一致せず候補自体が生成されない(failed)。
     const r = extractTotal([line("合訃", 140), line("¥788", 140, 200)]);
-    expect(r.status).toBe("needs-review");
-    expect(r.amountYen).toBe(788);
+    expect(r.status).toBe("failed");
+    expect(r.amountYen).toBeNull();
+  });
+
+  test("弱ラベル経由の金額候補は通貨表記(¥/￥/円)が必須(Codexレビュー指摘I2の安全弁)", () => {
+    // findMoneyTokensは通貨記号なしの裸の数字("788")もトークンとして拾うため、
+    // 弱ラベル("合")と関連付けられても通貨表記がなければ候補から除外する。
+    const r = extractTotal([line("合", 220), line("788", 220, 200)]);
+    expect(r.status).toBe("failed");
+    expect(r.amountYen).toBeNull();
+  });
+
+  // --- Codexレビュー指摘I2の敵対テスト: OCRが分割した一般的な数量表記が
+  // needs-reviewへ誤って格上げされないこと ---
+
+  test("敵対テスト: 「計」+「3点」はneeds-reviewへ格上げされない(I2)", () => {
+    const r = extractTotal([line("計", 100, 0, 0.95), line("3点", 100, 200, 0.95)]);
+    expect(r.status).not.toBe("needs-review");
+  });
+
+  test("敵対テスト: 「累計」+「500」はneeds-reviewへ格上げされない(I2: 編集距離1のゆるい照合廃止)", () => {
+    const r = extractTotal([line("累計", 100, 0, 0.95), line("500", 100, 200, 0.95)]);
+    expect(r.status).not.toBe("needs-review");
+  });
+
+  test("敵対テスト: 「商品計」+「4点」はneeds-reviewへ格上げされない(I2)", () => {
+    const r = extractTotal([line("商品計", 100, 0, 0.95), line("4点", 100, 200, 0.95)]);
+    expect(r.status).not.toBe("needs-review");
   });
 
   test("安全弁: 「小計」は編集距離1で「合計」に近いが弱ラベルとして誤認識しない(REJECT_LABELS優先)", () => {
