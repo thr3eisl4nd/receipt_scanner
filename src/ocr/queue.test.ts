@@ -24,10 +24,21 @@ function makeDeps(): OcrQueueDeps {
   };
 }
 
+/**
+ * v1.3(複数レシート自動分割)で`OcrEngine`に`detect()`が追加された。既存の
+ * queue.test.tsの大半は「1枚の写真=1レシート」の従来動作を検証するテストのため、
+ * `detect()`の既定モックは単一box(1個)を返す。`buildLayoutDecision`は片側最小5box
+ * 無いと分割候補にすらならないため、単一boxは常に`kind:"single"`(領域1つ=従来通り)
+ * になり、これらのテストの前提(1回のrecognize/enhanceContrastで完結する既存パイプライン)
+ * を変えない。
+ */
+const SINGLE_REGION_DETECT_BOX = [{ x: 0, y: 0, width: 100, height: 100 }];
+
 function makeEngine(recognizeImpl: (canvas: HTMLCanvasElement) => OcrLine[] | Promise<OcrLine[]>): OcrEngine {
   return {
     initialize: vi.fn(async () => undefined),
     recognize: vi.fn(async (canvas: HTMLCanvasElement) => recognizeImpl(canvas)),
+    detect: vi.fn(async () => SINGLE_REGION_DETECT_BOX),
     destroy: vi.fn(async () => undefined),
   };
 }
@@ -560,6 +571,7 @@ describe("createOcrQueue", () => {
         throw new Error("init boom");
       }),
       recognize: vi.fn(async () => [line()]),
+      detect: vi.fn(async () => SINGLE_REGION_DETECT_BOX),
       destroy: vi.fn(async () => undefined),
     };
 
@@ -775,6 +787,7 @@ describe("createOcrQueue", () => {
         throw new Error("init boom");
       }),
       recognize: vi.fn(async () => [line()]),
+      detect: vi.fn(async () => SINGLE_REGION_DETECT_BOX),
       destroy: vi.fn(async () => undefined),
     };
 

@@ -28,6 +28,8 @@ describe("createOcrQueue (結合: 実extractTotal + 合成OcrLine[])", () => {
     const engine: OcrEngine = {
       initialize: vi.fn(async () => undefined),
       recognize: vi.fn(async () => fx.supermarket),
+      // v1.3: 単一boxを返し、常にkind:"single"(領域1つ=従来通り)にする(queue.test.tsと同様)。
+      detect: vi.fn(async () => [{ x: 0, y: 0, width: 100, height: 100 }]),
       destroy: vi.fn(async () => undefined),
     };
 

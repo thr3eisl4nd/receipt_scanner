@@ -1,4 +1,4 @@
-import type { OcrEngine, OcrLine } from "./engine";
+import type { OcrBox, OcrEngine, OcrLine } from "./engine";
 import type { RowPatch } from "../state/reducer";
 import type { FailureKind } from "../types";
 import type { ExtractResult } from "../extract/extractTotal";
@@ -10,13 +10,18 @@ import {
   UnsupportedFormatError,
   ImageTooLargeError,
 } from "../image/preprocess";
+import { loadSourceImage, type NormalizedRect, type SourceImage } from "../image/sourceImage";
 import { extractTotal } from "../extract/extractTotal";
+import { buildLayoutDecision, cropRectForRegion, DEFAULT_THRESHOLDS } from "./regionDetection";
+
+export type { NormalizedRect } from "../image/sourceImage";
 
 /**
  * `loadAsCanvas`が投げた例外を`Row.failureKind`へ分類する(Codexレビュー最終ゲート
  * 指摘I1)。`UnsupportedFormatError`/`ImageTooLargeError`はinstanceofで判別できるが、
  * それ以外(実装の`ImageDecodeError`、テストスタブが投げる汎用`Error`等)は
- * すべて「デコード失敗」として扱う。
+ * すべて「デコード失敗」として扱う。`loadSourceImage`(v1.3)も同じエラー型を
+ * 投げるため共通で使う。
  */
 function classifyLoadError(err: unknown): FailureKind {
   if (err instanceof UnsupportedFormatError) return "unsupported-format";
@@ -37,10 +42,37 @@ export type QueueStatusEvent =
   // recognize()開始前にemitされるため、値そのものは「まだ完了していない現在番号」。
   | { kind: "processing"; current: number; total: number }
   | { kind: "model-error"; message: string }
-  | { kind: "complete"; done: number; total: number };
+  | { kind: "complete"; done: number; total: number }
+  // v1.3(§16.4): パス1(検出)完了時、この写真から複数のレシートを見つけたことを通知する
+  // (「この写真から◯枚のレシートを見つけました」)。ambiguousフォールバック(regions.length===1)
+  // では発火しない(発見ではなく安全側フォールバックのため)。
+  | { kind: "regionsFound"; count: number }
+  // v1.3(§16.4): 複数領域のうち何枚目を読取中か(「◯/◯枚目を読取中」)。
+  | { kind: "regionProcessing"; current: number; total: number };
+
+/** v1.3(§16.4): パス1で分割された1領域の記述子。`crop`は元画像に対する正規化座標(0..1)。 */
+export type RegionDescriptor = { jobId: string; crop: NormalizedRect };
+
+/**
+ * v1.3(§16.3/§16.5): `onRegions`と共に渡す安全弁フラグ。
+ * - `ambiguous`: 領域判定が曖昧で写真全体を1領域として処理した(§16.3の安全弁。
+ *   この場合auto-highは発生しない=呼び出し側は`needs-review`以下として扱われた
+ *   結果を受け取る)。
+ * - `nearLimit`: 領域数がMAX_REGIONSの上限付近(上限-1以上)。誤結合(本来もっと
+ *   多くのレシートがあるのに打ち切られた)の疑いがある目安。
+ * UI側(§16.5)はこのいずれかが真、またはグループ内に失敗行がある場合のみ
+ * 「写真全体を1枚として読み直す」「削除して撮り直す」の回復導線を表示する。
+ */
+export type RegionGroupFlags = { ambiguous: boolean; nearLimit: boolean };
 
 export type QueueCallbacks = {
   onStatus(event: QueueStatusEvent): void;
+  // v1.3(§16.4): パス1完了時、1枚の写真が複数領域(レシート)に分割されたことを通知する。
+  // 領域が1つ(kind:"single")の場合は発火しない(既存の1枚運用と完全互換にするため、
+  // 呼び出し側は`onResult`をそのまま`id`(enqueueに渡したid)で受け取ればよい)。
+  // 省略可能(未指定の場合、複数領域が生じても何も通知されない=呼び出し側は
+  // 単純化のため多重領域を無視できる)。
+  onRegions?(photoJobId: string, regions: RegionDescriptor[], flags: RegionGroupFlags): void;
   // 処理済み(縮小済み)canvasから生成した320px級サムネイルBlobを行へ返す(Codexレビュー指摘I1)。
   // 呼び出し側はObject URL化し、置換時・行削除時・削除済み行への遅着時に確実にrevokeすること。
   onThumbnail(id: string, blob: Blob): void;
@@ -50,22 +82,37 @@ export type QueueCallbacks = {
   onResult(id: string, patch: RowPatch): void; // 行更新(amountYen/status/candidates/processing)
 };
 
-type Item = { id: string; file: File };
+/**
+ * v1.3(§16.4): 個別領域の再試行・回復用オプション。
+ * - `crop`指定時: 元Fileを`loadSourceImage`で再デコードし、この正規化矩形だけを
+ *   元解像度からクロップして処理する(検出をやり直さない。特定の1領域の再試行)。
+ * - `forceSingle`指定時: 検出(detect)自体をスキップし、写真全体を1領域として
+ *   従来経路で処理する(§16.5「写真全体を1枚として読み直す」の回復導線)。
+ * どちらも未指定なら、通常の新規写真として検出→領域判定から処理する。
+ */
+export type EnqueueOptions = { crop?: NormalizedRect; forceSingle?: boolean };
+
+type Item = { id: string; file: File } & EnqueueOptions;
 
 /**
  * `loadAsCanvas`/`enhanceContrast`/`toThumbnailBlob`/`toPreviewBlob`の差し替えポイント。
  * 実運用では`src/image/preprocess.ts`の実装を使うが、jsdom環境の単体テストでは
  * 実Canvas描画(`drawImage`/`getImageData`/`toBlob`等)に依存できないため、薄いスタブに
  * 差し替えられるようにしている。
+ *
+ * `loadSourceImage`(v1.3)は複数領域が検出された場合の元解像度クロップ用で、任意指定
+ * (未指定時は`src/image/sourceImage.ts`の実装を使う)。既存(1枚運用)のテストは
+ * 領域が常に1つ(kind:"single")になるため、この依存に触れることはない。
  */
 export type OcrQueueDeps = {
   loadAsCanvas: (file: File) => Promise<HTMLCanvasElement>;
   enhanceContrast: (src: HTMLCanvasElement) => HTMLCanvasElement;
   toThumbnailBlob: (src: HTMLCanvasElement) => Promise<Blob>;
   toPreviewBlob: (src: HTMLCanvasElement) => Promise<Blob>;
+  loadSourceImage?: (file: File) => Promise<SourceImage>;
 };
 
-const defaultDeps: OcrQueueDeps = { loadAsCanvas, enhanceContrast, toThumbnailBlob, toPreviewBlob };
+const defaultDeps: OcrQueueDeps = { loadAsCanvas, enhanceContrast, toThumbnailBlob, toPreviewBlob, loadSourceImage };
 
 /** 処理済みcanvasの明示解放。描画バッファをGC任せにせず即座に縮小する。 */
 function releaseCanvas(canvas: HTMLCanvasElement): void {
@@ -193,6 +240,14 @@ export type OcrQueue = ReturnType<typeof createOcrQueue>;
  * `Promise.all`等での並列化は禁止(Global Constraints)。ppu-paddle-ocrのONNX
  * セッションは同時多重実行を想定しておらず、モデル自体も31MB前後あるため、
  * 1枚ずつ確実に処理し進捗をonStatusで都度通知する。
+ *
+ * v1.3(§16.1): 1枚の写真ごとに「検出1回(detect, 長辺1200相当)+完全OCR N回」を
+ * 直列実行する(検出も完全OCRも常に直列。並列化しない)。検出結果(§16.2の再帰XY-cut、
+ * `regionDetection.ts`)が単一領域(kind:"single")なら、従来通り1回のrecognize+
+ * 再試行ゲートで完結する(1枚運用との完全互換、既存269テストの前提)。複数領域
+ * (kind:"multiple")、または領域判定が曖昧(kind:"ambiguous", §16.3の安全弁)の場合のみ、
+ * `onRegions`で呼び出し側へ通知したうえで元解像度からの領域クロップ→領域ごとの
+ * OCRへ進む。
  */
 export function createOcrQueue(
   engine: OcrEngine,
@@ -265,6 +320,16 @@ export function createOcrQueue(
     }
   }
 
+  /** 同上。v1.3: 複数領域への分割通知(`onRegions`未指定なら何もしない)。 */
+  function emitRegions(photoJobId: string, regions: RegionDescriptor[], flags: RegionGroupFlags): void {
+    if (disposed || !cb.onRegions) return;
+    try {
+      cb.onRegions(photoJobId, regions, flags);
+    } catch (err) {
+      console.error("OCR onRegions callback failed:", photoJobId, err);
+    }
+  }
+
   /** 裸の`void run()`を一箇所に集約し、予期しないrejectを未処理のまま放置しない。 */
   function kick(): void {
     void run().catch((err) => {
@@ -272,37 +337,37 @@ export function createOcrQueue(
     });
   }
 
-  async function processItem(item: Item): Promise<void> {
-    // 画像ロード(decode)とOCR推論の失敗を別のtry/catchに分離する(Codexレビュー最終ゲート
-    // 指摘I1)。従来は単一のtry/catchで両方を囲んでおり、未対応形式・破損画像・巨大画像・
-    // OCR推論失敗のすべてが同じ`failedPatch()`(failureKindなし)に潰れ、UIも「読取失敗」の
-    // 一律表示になっていた。原因ごとに再試行が有効かどうかが異なるため区別する。
-    let canvas: HTMLCanvasElement;
-    try {
-      canvas = await deps.loadAsCanvas(item.file);
-    } catch (err) {
-      console.error("Image load failed:", item.file.name, err);
-      emitResult(item.id, failedPatch(classifyLoadError(err)));
-      return;
-    }
-
-    // 処理済み(縮小済み)canvasから表示用サムネイル・プレビューを生成して即座に返す
-    // (Codexレビュー指摘I1・最終ゲート指摘I2)。元画像のObject URLをApp側で保持し続けると
-    // メモリを圧迫するため、ここで作る縮小Blobを表示専用に使う。生成失敗はどちらも
-    // OCR結果に影響させないbest-effort。
+  /**
+   * サムネイル・プレビューの生成+通知(best-effort、Codexレビュー指摘I1・最終ゲート指摘I2)。
+   * `canvas`(処理済み・縮小済み)から生成し、失敗してもOCR結果には影響させない。
+   */
+  async function emitThumbnailAndPreview(id: string, canvas: HTMLCanvasElement): Promise<void> {
     try {
       const thumbnail = await deps.toThumbnailBlob(canvas);
-      emitThumbnail(item.id, thumbnail);
+      emitThumbnail(id, thumbnail);
     } catch (thumbErr) {
-      console.error("Thumbnail generation failed:", item.file.name, thumbErr);
+      console.error("Thumbnail generation failed:", id, thumbErr);
     }
     try {
       const preview = await deps.toPreviewBlob(canvas);
-      emitPreview(item.id, preview);
+      emitPreview(id, preview);
     } catch (previewErr) {
-      console.error("Preview generation failed:", item.file.name, previewErr);
+      console.error("Preview generation failed:", id, previewErr);
     }
+  }
 
+  /**
+   * recognize→extractTotal→コントラスト再試行ゲート、を実行しRowPatchを組み立てる
+   * (1枚運用・領域クロップ運用の両方から共有する中核パイプライン)。`canvas`は
+   * 呼び出し側が既に用意した処理対象(1枚運用なら`loadAsCanvas`結果、領域クロップ
+   * 運用なら`SourceImage.cropToCanvas`結果)。呼び出し後、`canvas`(と再試行で
+   * 生成した補正版)は必ず解放する。
+   *
+   * `forceNonAutoHigh`(§16.3の安全弁): 領域判定が`ambiguous`だった場合にtrueを渡す。
+   * 誤って2枚を1領域に結合したまま片方の合計を自動確定する事故を防ぐため、最終結果が
+   * `auto-high`でも`needs-review`へ格下げする(金額・候補はそのまま、状態のみ変更)。
+   */
+  async function runOcrPipeline(canvas: HTMLCanvasElement, forceNonAutoHigh: boolean): Promise<RowPatch> {
     let enhanced: HTMLCanvasElement | undefined;
     let patch: RowPatch;
     try {
@@ -326,23 +391,28 @@ export function createOcrQueue(
           // 改善していない場合(補正で悪化する/変わらないケース)は元結果を維持する。
           if (STATUS_RANK[secondResult.status] > STATUS_RANK[result.status]) result = secondResult;
         } catch (retryErr) {
-          console.error("OCR retry failed, keeping first result:", item.file.name, retryErr);
+          console.error("OCR retry failed, keeping first result:", retryErr);
         }
       }
 
+      // §16.3の安全弁: ambiguous(領域判定が曖昧)な写真から生じた結果はauto-highを
+      // 許可しない。誤結合を自動確定させる事故を防ぐため、金額・候補はそのまま
+      // needs-reviewへ格下げする。
+      const finalStatus = forceNonAutoHigh && result.status === "auto-high" ? "needs-review" : result.status;
+
       patch = {
         amountYen: result.amountYen,
-        status: result.status,
+        status: finalStatus,
         candidates: result.candidates,
         processing: false,
         // 通常経路(例外を投げず`extractTotal`がfailedを返した場合)にも撮り直し案内を
         // 表示できるようfailureKindを付与する(Codexレビュー指摘I1)。従来は例外catch経由の
         // failedにしかfailureKind:"ocr"が付かず、「OCRは成功したが合計を抽出できない」という
         // 主症状で撮り直し案内が到達不能だった。
-        failureKind: result.status === "failed" ? "ocr" : undefined,
+        failureKind: finalStatus === "failed" ? "ocr" : undefined,
       };
     } catch (err) {
-      console.error("OCR failed:", item.file.name, err);
+      console.error("OCR failed:", err);
       patch = failedPatch("ocr");
     } finally {
       // onResult(呼び出し側コールバック)の例外をOCR失敗と誤認しないよう、
@@ -350,7 +420,155 @@ export function createOcrQueue(
       releaseCanvas(canvas);
       if (enhanced) releaseCanvas(enhanced);
     }
-    emitResult(item.id, patch);
+    return patch;
+  }
+
+  /** サムネイル・プレビュー生成→OCRパイプライン→onResult、を1つの`canvas`に対して実行する。 */
+  async function processCanvas(id: string, canvas: HTMLCanvasElement, forceNonAutoHigh: boolean): Promise<void> {
+    await emitThumbnailAndPreview(id, canvas);
+    const patch = await runOcrPipeline(canvas, forceNonAutoHigh);
+    emitResult(id, patch);
+  }
+
+  /**
+   * v1.3(§16.4): 個別領域ジョブ(内部生成 or ユーザーによる`crop`指定の再試行)。
+   * 元Fileを`loadSourceImage`で再デコードし、`crop`(正規化座標)だけを元解像度から
+   * クロップして通常のOCRパイプラインへ渡す。検出(detect)・領域判定はやり直さない。
+   */
+  async function processRegionJob(id: string, file: File, crop: NormalizedRect): Promise<void> {
+    const loadSource = deps.loadSourceImage ?? loadSourceImage;
+    let source: SourceImage;
+    try {
+      source = await loadSource(file);
+    } catch (err) {
+      console.error("Source image load failed:", file.name, err);
+      emitResult(id, failedPatch(classifyLoadError(err)));
+      return;
+    }
+    try {
+      const cropCanvas = source.cropToCanvas(crop, 1600);
+      await processCanvas(id, cropCanvas, false);
+    } finally {
+      source.close();
+    }
+  }
+
+  /**
+   * 写真全体を1領域として扱う経路(§16.5「写真全体を1枚として読み直す」回復導線、および
+   * 新規写真がkind:"single"だった場合の従来経路)。`loadAsCanvas`(EXIF回転補正+長辺1600へ
+   * 縮小)をそのまま使い、検出は行わない。
+   */
+  async function processWholePhoto(id: string, file: File, forceNonAutoHigh: boolean): Promise<void> {
+    let canvas: HTMLCanvasElement;
+    try {
+      canvas = await deps.loadAsCanvas(file);
+    } catch (err) {
+      console.error("Image load failed:", file.name, err);
+      emitResult(id, failedPatch(classifyLoadError(err)));
+      return;
+    }
+    await processCanvas(id, canvas, forceNonAutoHigh);
+  }
+
+  /**
+   * v1.3の中心関数: 新規写真(`crop`/`forceSingle`いずれも未指定)を検出→領域判定から
+   * 処理する。§16.1のパス1(検出専用実行)→再帰XY-cut(`regionDetection.ts`)→
+   * LayoutDecisionに応じて分岐する:
+   *
+   * - `single`: 従来経路(`processWholePhoto`)にそのまま委譲する。1枚運用との完全互換。
+   * - `multiple`/`ambiguous`: `onRegions`で通知したうえで、元解像度から領域ごとに
+   *   クロップ(`SourceImage`)→領域ごとにOCR、を直列実行する。`ambiguous`は
+   *   fallbackRegion(写真全体)を単一領域として扱いつつ、auto-highを禁止する
+   *   (`runOcrPipeline`の`forceNonAutoHigh`)。
+   */
+  async function processNewPhoto(item: Item): Promise<void> {
+    let canvas: HTMLCanvasElement;
+    try {
+      canvas = await deps.loadAsCanvas(item.file);
+    } catch (err) {
+      console.error("Image load failed:", item.file.name, err);
+      emitResult(item.id, failedPatch(classifyLoadError(err)));
+      return;
+    }
+
+    let boxes: OcrBox[];
+    try {
+      boxes = await engine.detect(canvas);
+    } catch (err) {
+      // 検出専用実行自体の失敗は、写真全体を1領域として扱う安全側フォールバックにする
+      // (§16.3の安全弁と同じ考え方: 分割根拠を得られないなら分割しない)。
+      console.error("Detect failed, treating whole photo as a single region:", item.file.name, err);
+      boxes = [];
+    }
+
+    const decision = buildLayoutDecision(boxes, canvas.width, canvas.height);
+
+    if (decision.kind === "single") {
+      // 1枚運用との完全互換: 検出canvasをそのままOCRへ渡す(再クロップしない)。
+      await processCanvas(item.id, canvas, false);
+      return;
+    }
+
+    // multiple/ambiguous: 検出用canvasはここで役目を終える(OCRには使わない)。
+    const regions = decision.kind === "multiple" ? decision.regions : [decision.fallbackRegion];
+    const ambiguous = decision.kind === "ambiguous";
+    const nearLimit = regions.length >= DEFAULT_THRESHOLDS.maxRegions - 1;
+
+    // 検出canvas座標系での正規化座標(0..1)は、EXIF補正済み・無クロップの元画像に対する
+    // 正規化座標と一致する(`loadAsCanvas`は縦横比を保ったまま一様縮小するのみのため)。
+    // そのため元解像度への再デコード(`loadSourceImage`)より前に計算できる。
+    const regionDescriptors: RegionDescriptor[] = regions.map((region, i) => {
+      const cropRect = cropRectForRegion(region, canvas.width, canvas.height);
+      return {
+        jobId: `${item.id}#${i}`,
+        crop: {
+          x: cropRect.x / canvas.width,
+          y: cropRect.y / canvas.height,
+          width: cropRect.width / canvas.width,
+          height: cropRect.height / canvas.height,
+        },
+      };
+    });
+    releaseCanvas(canvas);
+
+    emitRegions(item.id, regionDescriptors, { ambiguous, nearLimit });
+    if (!ambiguous) {
+      emitStatus({ kind: "regionsFound", count: regionDescriptors.length });
+    }
+
+    const loadSource = deps.loadSourceImage ?? loadSourceImage;
+    let source: SourceImage;
+    try {
+      source = await loadSource(item.file);
+    } catch (err) {
+      console.error("Source image load failed:", item.file.name, err);
+      const failKind = classifyLoadError(err);
+      for (const desc of regionDescriptors) emitResult(desc.jobId, failedPatch(failKind));
+      return;
+    }
+
+    try {
+      for (let i = 0; i < regionDescriptors.length; i++) {
+        const desc = regionDescriptors[i];
+        emitStatus({ kind: "regionProcessing", current: i + 1, total: regionDescriptors.length });
+        const cropCanvas = source.cropToCanvas(desc.crop, 1600);
+        await processCanvas(desc.jobId, cropCanvas, ambiguous);
+      }
+    } finally {
+      source.close();
+    }
+  }
+
+  async function processItem(item: Item): Promise<void> {
+    if (item.crop) {
+      await processRegionJob(item.id, item.file, item.crop);
+      return;
+    }
+    if (item.forceSingle) {
+      await processWholePhoto(item.id, item.file, false);
+      return;
+    }
+    await processNewPhoto(item);
   }
 
   async function run(): Promise<void> {
@@ -406,7 +624,11 @@ export function createOcrQueue(
   }
 
   return {
-    enqueue(id: string, file: File) {
+    /**
+     * `options.crop`/`options.forceSingle`はv1.3の再試行・回復導線用(§16.4/§16.5)。
+     * 通常の新規写真追加は`enqueue(id, file)`のまま(第3引数省略)でよい。
+     */
+    enqueue(id: string, file: File, options?: EnqueueOptions) {
       // dispose後は新規enqueueを一切受け付けない(Codexレビュー指摘I2)。
       if (disposed) return;
       // 未処理・処理中のアイテムが無ければ、これは新しいバッチの開始とみなし
@@ -418,7 +640,7 @@ export function createOcrQueue(
         total = 0;
         done = 0;
       }
-      pending.push({ id, file });
+      pending.push({ id, file, crop: options?.crop, forceSingle: options?.forceSingle });
       total++;
       kick();
     },
