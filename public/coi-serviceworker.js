@@ -2,6 +2,15 @@
 // Injects COOP/COEP response headers so the page becomes cross-origin isolated,
 // which enables SharedArrayBuffer and lets onnxruntime-web run multithreaded
 // WASM. Needed because GitHub Pages cannot set these headers server-side.
+//
+// Locally patched (task-19, Codexレビュー I1/I2a) vs. upstream v0.1.7: the
+// `updatefound` handler below no longer reloads immediately. It now (1) only
+// reloads for the very first install of this SW (not for later version
+// updates — those take effect on the next navigation instead, so a background
+// deploy can't interrupt an in-progress session) and (2) waits for the new
+// worker to reach `activated` before reloading (reloading earlier could leave
+// the page still uncontrolled/non-isolated after the reload while also
+// suppressing re-registration via `coiReloadedBySelf`).
 let coepCredentialless = false;
 if (typeof window === "undefined") {
   self.addEventListener("install", () => self.skipWaiting());
@@ -106,10 +115,39 @@ if (typeof window === "undefined") {
               !coi.quiet && console.log("COOP/COEP Service Worker registered", registration.scope);
 
               registration.addEventListener("updatefound", () => {
-                !coi.quiet &&
-                  console.log("Reloading page to make use of updated COOP/COEP Service Worker.");
-                window.sessionStorage.setItem("coiReloadedBySelf", "updatefound");
-                coi.doReload();
+                const newWorker = registration.installing;
+                if (!newWorker) return;
+
+                // `registration.active` still refers to the *previous* worker at the
+                // moment `updatefound` fires (it only flips to the new one once that
+                // one activates), so its presence here means some SW was already
+                // active for this scope before — i.e. this is a version update, not
+                // the first-ever install (Codexレビュー I2a). Don't reload for
+                // updates: skipWaiting()/clients.claim() on the SW side mean the new
+                // worker takes over on its own, and it'll be picked up cleanly on the
+                // next navigation instead of interrupting the current session.
+                if (registration.active) {
+                  !coi.quiet &&
+                    console.log(
+                      "New COOP/COEP Service Worker installed; it will take effect on next navigation."
+                    );
+                  return;
+                }
+
+                // First-ever install for this scope: wait for the new worker to
+                // reach `activated` before reloading (Codexレビュー I1). Reloading
+                // any earlier can leave the page uncontrolled/non-isolated even
+                // after the reload, while `coiReloadedBySelf` blocks the next
+                // registration attempt until a later manual navigation.
+                const reloadWhenActivated = () => {
+                  if (newWorker.state !== "activated") return;
+                  !coi.quiet &&
+                    console.log("Reloading page to make use of newly activated COOP/COEP Service Worker.");
+                  window.sessionStorage.setItem("coiReloadedBySelf", "updatefound");
+                  coi.doReload();
+                };
+                newWorker.addEventListener("statechange", reloadWhenActivated);
+                reloadWhenActivated(); // already activated by the time we attached (unlikely but cheap to cover)
               });
 
               // If the registration is active, but it's not controlling the page

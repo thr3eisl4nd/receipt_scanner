@@ -210,6 +210,26 @@ describe("App", () => {
     expect(screen.getByText(/パパの行が1件あるため削除できません/)).toBeTruthy();
   });
 
+  it("pagehide時に最新のstateを同期的にlocalStorageへ保存する(Codexレビュー指摘I2: 自動保存useEffectとcoi-serviceworkerの自動リロード等が競合しても、pagehideの保険で最後の変更を失わない)", () => {
+    seedTwoPeople();
+    render(<App />);
+
+    // stateを変化させる(通常はここで自動保存effectも既に走って保存されるが、
+    // pagehideハンドラがそれとは独立に「stateRef経由の最新state」を保存できている
+    // ことを検証したいので、いったんlocalStorageを消してから確認する)。
+    fireEvent.click(screen.getByRole("button", { name: "夫の名前を編集" }));
+    fireEvent.change(screen.getByLabelText("人の名前"), { target: { value: "パパ" } });
+    fireEvent.blur(screen.getByLabelText("人の名前"));
+
+    localStorage.removeItem(STORAGE_KEY);
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+
+    window.dispatchEvent(new Event("pagehide"));
+
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) as string);
+    expect((stored.people as { name: string }[]).map((p) => p.name)).toEqual(["パパ", "妻"]);
+  });
+
   it("ファイル追加→処理中表示→OCR結果反映→金額タップ編集の一連の流れ", async () => {
     const { container } = render(<App />);
 

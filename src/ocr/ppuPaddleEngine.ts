@@ -36,16 +36,20 @@ const ORT_WASM_BASE_URL = `${import.meta.env.BASE_URL}ort/`;
  * onnxruntime-web wasmバックエンドのスレッド数上限。
  *
  * `env.wasm.numThreads` はcross-origin isolated(`window.crossOriginIsolated`)な
- * ページでのみ実際にマルチスレッド化され、そうでない場合onnxruntime-webが自動的に
- * 1(シングルスレッド)へフォールバックする(ライブラリ側の既定動作、こちら側での
- * 分岐は不要)。本サイトは `index.html`/`spike.html` 先頭で読み込む coi-serviceworker
- * (`public/coi-serviceworker.js`)がGitHub Pagesでもcross-origin isolationを
- * 付与するため、対応環境では実際にマルチスレッドで動作する。
- * 上限4はモバイル端末での過剰なワーカースレッド生成(メモリ・スケジューリング
- * コスト)を避けるための保守的な値。
+ * ページでのみ実際にマルチスレッド化される。本サイトは `index.html`/`spike.html`
+ * 先頭で読み込む coi-serviceworker(`public/coi-serviceworker.js`)がGitHub Pages
+ * でもcross-origin isolationを付与するため、対応環境では実際にマルチスレッドで
+ * 動作する。
+ *
+ * 非対応環境では明示的に1(シングルスレッド)を指定する。以前は`window.crossOriginIsolated`
+ * で分岐せず常に`min(4, hardwareConcurrency)`を設定していたが、これはonnxruntime-web
+ * 自身の既定値`min(4, ceil(hardwareConcurrency / 2))`より積極的すぎ、「モバイル向けに
+ * 保守的」という意図と矛盾していた(Codexレビュー指摘Minor)。ライブラリ側の
+ * cross-origin isolated判定によるフォールバックに暗黙で頼るのではなく、ここで
+ * ライブラリの既定値と同じ計算式を明示し、非対応環境では1に固定する。
  */
 function resolveOrtNumThreads(): number {
-  return Math.min(4, navigator.hardwareConcurrency ?? 1);
+  return window.crossOriginIsolated ? Math.min(4, Math.ceil((navigator.hardwareConcurrency || 1) / 2)) : 1;
 }
 
 /**
@@ -71,8 +75,8 @@ export function createPpuPaddleEngine(): OcrEngine {
     initPromise = (async () => {
       // 自サイト同梱のwasmを使わせる(外部CDNへのフォールバックを防ぐ)。
       ortEnv.wasm.wasmPaths = ORT_WASM_BASE_URL;
-      // cross-origin isolated環境ではマルチスレッドWASMを有効化する(非対応環境は
-      // onnxruntime-web側が自動的にシングルスレッドへフォールバックする)。
+      // cross-origin isolated環境ではマルチスレッドWASMを有効化し、非対応環境は
+      // 明示的に1(シングルスレッド)にする(`resolveOrtNumThreads()`参照)。
       ortEnv.wasm.numThreads = resolveOrtNumThreads();
       const candidate = new PaddleOcrService({
         model: {

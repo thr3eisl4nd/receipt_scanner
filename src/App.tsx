@@ -67,6 +67,9 @@ export default function App() {
   // アンマウント時のクリーンアップ(サムネイルURL解放)用に最新のrowsを参照できるようにする。
   const rowsRef = useRef(state.rows);
   rowsRef.current = state.rows;
+  // pagehide時の同期保存(下記useEffect参照)用に、常に最新のstate全体を参照できるようにする。
+  const stateRef = useRef(state);
+  stateRef.current = state;
   // OCRキューはuseEffect内(useMemoではなく)で生成する(Codexレビュー指摘I2)。
   // StrictModeの開発時二重effect実行(mount→cleanup→mount)でも、cleanupのたびに
   // 新しいengine/queueが作られ直すため、「dispose済みの古いqueueを実運用でも
@@ -255,6 +258,21 @@ export default function App() {
     dispatch({ type: "setSaveFailed", value: !saveState(toPersisted(state)) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.month, state.rows, state.people]);
+
+  // 上記の自動保存effectはpassiveなため、直前のReact更新の後・このeffectが走る前に
+  // ページがリロード/タブ終了されると、その間の最後の変更が保存されないまま失われうる
+  // (Codexレビュー指摘I2: coi-serviceworker初回インストール時の自動リロードがこの
+  // 窓に重なる可能性がある。リロードでなくとも通常のタブ閉じ・端末ロック等でも同様)。
+  // `pagehide`はリロード・タブクローズ・他ページへの遷移のいずれでも同期的に発火する
+  // (`beforeunload`と異なりbfcache採用ブラウザでも確実に発火し、`unload`より推奨される)
+  // ため、ここで`stateRef`経由の最新stateを同期的に保存し直す保険を掛ける。
+  useEffect(() => {
+    const handlePageHide = () => {
+      saveState(toPersisted(stateRef.current));
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, []);
 
   // v1.3(§16.5、Codexレビュー最終ゲート指摘I7): 正常完了(全領域成功・ambiguous/
   // nearLimitなし)したPhotoGroupの元Fileを解放する。`photoGroupRef`のエントリ自体を
