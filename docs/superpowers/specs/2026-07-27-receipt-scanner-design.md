@@ -63,7 +63,7 @@ export interface OcrEngine {
 ```
 
 - ライブラリと `onnxruntime-web` は**完全固定バージョン**。モデル・辞書・WASMは**自サイトに同梱**(デフォルトのリモート取得を使わない)。外部CDN・外部フォント・分析タグなし
-- オフライン動作は要件外とし、保証しない(Service Workerは導入しない)
+- オフライン動作は要件外とし、保証しない(オフライン用SWは導入しない。cross-origin isolation用のcoi-serviceworkerのみ使用(v1.5))
 
 ## 4. アーキテクチャ
 

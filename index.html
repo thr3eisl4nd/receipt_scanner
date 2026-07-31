@@ -2,6 +2,18 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      GitHub PagesはCOOP/COEPレスポンスヘッダーを設定できないため、coi-serviceworker
+      (MIT, v0.1.7。node_modules/ppu-paddle-ocr/coi-serviceworker.js からpublic/へ複製、
+      ppu-paddle-ocrは package.json で 6.2.0 に固定)でcross-origin isolationを付与し、
+      onnxruntime-webのマルチスレッドWASMを有効化する(スレッド数は
+      src/ocr/ppuPaddleEngine.ts の numThreads設定側で決める)。
+      初回訪問時のみ1回、自動リロードが入る。
+      Service Worker登録に失敗する環境(プライベートブラウジング等)やsecure context
+      でない場合は何もせず、従来通りシングルスレッドで動作する(graceful degradation、
+      本体側は変更不要)。他のService Workerは導入しない(オフライン対応は要件外)。
+    -->
+    <script src="/coi-serviceworker.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#171C19" />
     <title>レシート清算スキャナー</title>
