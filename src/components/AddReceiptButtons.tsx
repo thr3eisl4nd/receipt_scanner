@@ -55,7 +55,12 @@ export function AddReceiptButtons({ people, onFiles }: Props) {
         <button
           type="button"
           className="capture-primary"
-          aria-label={`${selectedPerson?.name ?? ""}のレシートをカメラで撮る`}
+          /* 表示ラベル「レシートを撮る」が完全な文字列としてアクセシブルネームに含まれる
+             よう、補足(誰の分か・カメラ経由か)は前後に配置する(Codexレビュー v1.4指摘
+             I5: WCAG 2.5.3 Label in Name。旧「◯◯のレシートをカメラで撮る」は「カメラで」が
+             「レシートを」と「撮る」の間に割り込み、表示ラベルの完全一致部分文字列を
+             含んでいなかった)。 */
+          aria-label={`${selectedPerson?.name ?? ""}のレシートを撮る（カメラ）`}
           onClick={() => cameraRefs.current.get(selectedPayerId)?.click()}
         >
           レシートを撮る

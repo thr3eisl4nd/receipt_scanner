@@ -59,6 +59,13 @@ function selectFile(input: HTMLInputElement, file: File) {
   fireEvent.change(input, { target: { files: [file] } });
 }
 
+/** スマホ・タブレット(<1024px、jsdomの既定)では集計パネルの本文が既定で折りたたまれて
+ *  いる(Codexレビュー v1.4指摘I4: expanded初期値をfalseへ変更)。「新しい月を始める」
+ *  ボタンは本文側にあるため、クリックする前に展開しておく。 */
+function expandSummary() {
+  fireEvent.click(screen.getByRole("button", { name: /集計を展開/ }));
+}
+
 // 金額編集UI内の各ボタンは、複数行での重複を避けるためrow.label入りのaria-labelを
 // 持つ(Codexレビュー再指摘I4/I9)。表示テキスト("確定"等)ではなくaria-labelで
 // 一貫して取得するためのヘルパー。
@@ -124,7 +131,7 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { level: 1 }).textContent).toContain("レシート清算スキャナー");
     expect(screen.getByRole("button", { name: "わたしのレシートをアルバムから選ぶ" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "わたしのレシートをカメラで撮る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "わたしのレシートを撮る（カメラ）" })).toBeTruthy();
     expect(container.querySelectorAll('input[type="file"]')).toHaveLength(2);
 
     const list = container.querySelector(".receipt-list");
@@ -153,7 +160,7 @@ describe("App", () => {
 
     // 初期選択は人リストの先頭(夫)。夫のボタンだけが見え、妻のボタンはまだ無い。
     expect(screen.getByRole("button", { name: "夫のレシートをアルバムから選ぶ" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "夫のレシートをカメラで撮る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "夫のレシートを撮る（カメラ）" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "妻のレシートをアルバムから選ぶ" })).toBeNull();
     expect(container.querySelectorAll('input[type="file"]')).toHaveLength(4);
 
@@ -163,7 +170,7 @@ describe("App", () => {
     fireEvent.click(wifeChip);
     expect(wifeChip.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "妻のレシートをアルバムから選ぶ" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "妻のレシートをカメラで撮る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "妻のレシートを撮る（カメラ）" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "夫のレシートをアルバムから選ぶ" })).toBeNull();
 
     // 「+ 人を追加」でhidden inputも増える(既に2人いるので新規追加分は「3人目」)
@@ -175,7 +182,7 @@ describe("App", () => {
   it("人が1人のときは支払者セグメントを表示しない(選ぶ意味が無いため、設計ドキュメント§17.7)", () => {
     render(<App />); // デフォルト状態は人1人(わたし)
     expect(screen.queryByRole("group", { name: "支払った人を選択" })).toBeNull();
-    expect(screen.getByRole("button", { name: "わたしのレシートをカメラで撮る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "わたしのレシートを撮る（カメラ）" })).toBeTruthy();
   });
 
   it("人の改名は取り込みボタン・手動追加の選択肢へ反映され、行が残っている人の削除は拒否される(設計ドキュメント§14.1)", () => {
@@ -981,6 +988,7 @@ describe("App", () => {
 
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     try {
+      expandSummary();
       fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
       expect(confirmSpy).toHaveBeenCalledTimes(1);
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
@@ -1006,6 +1014,7 @@ describe("App", () => {
       expect(container.querySelectorAll(".receipt-row")).toHaveLength(1);
 
       revokeSpy.mockClear();
+      expandSummary();
       fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
 
       // 確認ダイアログには現在の集計(人別合計)が含まれる
@@ -1047,6 +1056,7 @@ describe("App", () => {
       expect(within(container.querySelector(".receipt-row") as HTMLElement).getByText("処理中…")).toBeTruthy();
 
       cancelAllMock.mockClear();
+      expandSummary();
       fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
 
       // pending中のOCRジョブがキャンセルされる(呼ばないと旧月の画像がバックグラウンドで
@@ -1090,6 +1100,7 @@ describe("App", () => {
         throw new DOMException("quota exceeded", "QuotaExceededError");
       });
       cancelAllMock.mockClear();
+      expandSummary();
       fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
       setItemSpy.mockRestore();
 

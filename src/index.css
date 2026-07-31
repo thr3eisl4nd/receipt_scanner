@@ -12,17 +12,21 @@
 
   /* デザイントークン(設計ドキュメント§17.2)。ブリーフの基準色を起点に、AAコントラスト
      実測(下記コメント)にもとづき ink-faded と赤文字専用色のみ微調整している。実測値は
-     `.superpowers/sdd/task-17-report.md` に一覧化。 */
+     `.superpowers/sdd/task-17-report.md` に一覧化(Codexレビューv1.4指摘I1: 単色同士の
+     数値だけでなく、バッジウォッシュ・処理中行・hover/active・紙テクスチャを含む実描画
+     状態でAA(4.5:1)を満たすよう再調整した)。 */
   --paper: #f4f0e7; /* 感熱紙(暖かいオフホワイト) */
   --ink: #171715; /* メイン文字 */
-  /* ブリーフの--ink-faded(#77736A)は紙の上で4.15:1とAA(4.5:1)にわずかに届かないため、
-     inkへ6%寄せて4.53:1まで調整。 */
-  --ink-faded: #716d65;
+  /* v1.4当初値(#716D65)は単色同士では4.53:1でAA達成していたが、4%処理中ウォッシュ・
+     2.2%紙テクスチャ・6%hoverウォッシュ等を重ねた実描画状態では4.5をわずかに割り込む
+     組み合わせがあった(Codexレビューv1.4指摘I1)。inkへさらに寄せて実描画状態込みで
+     4.5:1以上を確保する。 */
+  --ink-faded: #66625b;
   --stamp: #d25541; /* アクセント赤(枠線・ドット・低アルファ塗りなど非文字用途) */
-  /* stampをそのまま紙の上の文字色に使うと3.61:1でAA未達のため、文字専用に暗くした
-     近似色を用意する(紙の上で4.61:1)。枠線・ドット・フォーカスリングには引き続き
-     `--stamp`を使う。 */
-  --stamp-text: #b44b3a;
+  /* v1.4当初値(#B44B3A)は単色同士では4.61:1だったが、5%バッジウォッシュ等の実描画状態を
+     踏まえてさらに暗くし余裕を持たせる(Codexレビューv1.4指摘I1)。枠線・ドット・
+     フォーカスリングには引き続き`--stamp`を使う。 */
+  --stamp-text: #9f3d31;
   --counter: #171c19; /* 背景(黒に近い深緑) */
 
   --rule-hairline: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); /* 行区切り等の控えめな罫線 */
@@ -78,6 +82,21 @@ button, a, input, select, [role="button"] {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   font-family: inherit;
+}
+
+/* 視覚的には隠すが支援技術へは読み上げさせるテキスト(Codexレビューv1.4指摘I5)。
+   `aria-label`でボタンの名前を上書きする代わりに、子要素として実テキストを構成する
+   ために使う(Label in Name対応)。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* 数字・金額・月表示・進捗カウントはモノスペース+桁揃え(設計ドキュメント§17.4:
@@ -295,7 +314,8 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
+  /* 36px→44px(Codexレビューv1.4指摘I6: §17.11のタップ領域44px以上要件に違反していた)。 */
+  min-height: 44px;
   padding: 5px 12px;
   border-radius: var(--radius-pill);
   border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
@@ -306,11 +326,14 @@ main {
   overflow-wrap: anywhere;
   max-width: 100%;
 }
-/* 選択中は色+太字+枠線の三重で明示する(色だけに頼らない、設計ドキュメント既存a11y方針)。 */
+/* 選択中は色+太字+枠線の三重で明示する(色だけに頼らない、設計ドキュメント既存a11y方針)。
+   font-weightは基本状態が既に600のため、選択中は700まで上げて太字化を体感できるようにする
+   (Codexレビューv1.4指摘I6)。 */
 .payer-chip[aria-pressed="true"] {
   background: var(--person-soft, color-mix(in srgb, var(--ink) 10%, var(--paper)));
   border-color: var(--ink);
   color: var(--ink);
+  font-weight: 700;
 }
 .payer-chip.person-color-0 { --person-accent: var(--person-color-0); --person-soft: color-mix(in srgb, var(--person-color-0) 18%, var(--paper)); }
 .payer-chip.person-color-1 { --person-accent: var(--person-color-1); --person-soft: color-mix(in srgb, var(--person-color-1) 18%, var(--paper)); }
@@ -409,7 +432,9 @@ main {
 .amount {
   display: block;
   font-size: 20px; font-weight: 700; background: none; border: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); border-radius: 0;
+  /* 編集可能であることを示す下線は非textコントラスト基準(3:1)の対象(Codexレビューv1.4
+     指摘I1)。30%inkでは紙の上で約1.93:1しかなく、48%へ引き上げて約3.1:1を確保する。 */
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 48%, transparent); border-radius: 0;
   padding: 4px 4px; min-height: 44px; color: var(--ink);
 }
 .amount-editor { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
@@ -421,7 +446,13 @@ main {
   min-height: 44px; min-width: 44px; padding: 4px 10px; border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); background: var(--paper); color: var(--ink);
 }
-.sign-toggle[aria-pressed="true"] { background: var(--stamp); border-color: var(--stamp); color: #fff; }
+/* 白文字/stampベタ塗りは実測4.10:1でAA未達だったため、背景を紙で薄めて文字をinkにする
+   (Codexレビューv1.4指摘I1: 約5.66:1)。 */
+.sign-toggle[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--stamp) 80%, var(--paper));
+  border-color: var(--stamp);
+  color: var(--ink);
+}
 .amount-error { color: var(--stamp-text); margin: 4px 0 0; font-size: 13px; width: 100%; }
 .failure-message { color: var(--stamp-text); margin: 4px 0 0; font-size: 13px; width: 100%; }
 
@@ -570,8 +601,13 @@ main {
 
 /* ---------------------------------------------------------------------
    集計パネル(設計ドキュメント§17.5・§17.9)。
-   スマホ・タブレット(<1024px): 画面下部固定+折りたたみ(合計行だけのコンパクト
-   表示⇄展開)。>=1024px: 下部固定をやめ、右カラムのstickyパネルにする。
+   スマホ・タブレット(<1024px): 画面下部固定+折りたたみ(既定は折りたたみ、合計行だけの
+   コンパクト表示⇄展開)。>=1024px: 下部固定をやめ、右カラムのstickyパネルにし、
+   「合計」見出し+全員合計を常時表示する(JS側`useMediaQuery`によるisDesktop判定で
+   トグルボタン自体を描画し分け、hidden属性の実状態と描画を一致させる。Codexレビュー
+   v1.4指摘I3: 従来はトグルをCSSで`display:none`にしつつ本文の`hidden`属性をCSSの
+   `display:block`で上書きしており、PCで全員合計と「合計」見出しが消えるうえ`hidden`の
+   意味論にも反していた)。
    --------------------------------------------------------------------- */
 .summary-panel {
   position: fixed; bottom: 0; left: 0; right: 0;
@@ -604,6 +640,11 @@ main {
 }
 .summary-chevron { color: var(--ink-faded); font-size: 12px; }
 
+/* PC(>=1024px)専用の「合計」見出し(Codexレビューv1.4指摘I3)。トグルボタンの代わりに
+   常時表示する非インタラクティブな見出し行で、`.summary-toggle-label`/
+   `.summary-toggle-amount`を流用してトグルと同じ見た目にする。 */
+.summary-desktop-heading { display: flex; align-items: center; gap: 8px; }
+
 /* 表示/非表示自体はJSX側の`hidden`属性(ネイティブセマンティクス、a11y上も正しく
    ツリーから除外される)で制御する。ここでは展開時の控えめな出現アニメーションのみ
    付与する。 */
@@ -611,6 +652,27 @@ main {
 @keyframes summary-reveal {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
+}
+
+/* スマホ・タブレット(<1024px)は既定で折りたたみ(Codexレビューv1.4指摘I4: 5〜8人など
+   人数が多い場合に固定パネルが画面を圧迫しないようにする)。展開時は画面の70dvh(最大
+   560px)を上限に内部スクロールへ切り替え、トグルバー自体はスクロール中も
+   `position:sticky`で上端に留まって折りたたみ操作を常に可能にする。 */
+@media (max-width: 1023px) {
+  .summary-panel.is-expanded {
+    max-height: min(70dvh, 560px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .summary-toggle {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background-color: var(--paper);
+    background-image: var(--paper-texture);
+    background-size: 7px 9px, 11px 13px;
+  }
 }
 
 .summary-body-inner {
@@ -664,7 +726,10 @@ main {
 }
 
 /* >=1024px: 下部固定をやめ、右カラムのstickyパネルへ切り替える(設計ドキュメント§17.5)。
-   折りたたみトグルは意味を失うため隠し、常に全内容を表示する。 */
+   トグルボタンはJS側(`useMediaQuery`のisDesktop)で描画自体をやめ、代わりに
+   `.summary-desktop-heading`(常時表示の「合計」見出し)を描画する。本文の`hidden`属性も
+   JS側で常にfalseにする(Codexレビューv1.4指摘I3: CSSで`hidden`属性の実際の意味を
+   上書きしない)。 */
 @media (min-width: 1024px) {
   .summary-panel {
     position: sticky;
@@ -678,10 +743,12 @@ main {
     max-height: calc(100vh - 80px);
     overflow-y: auto;
   }
-  .summary-toggle { display: none; }
-  .summary-body { display: block; }
-  .summary-body-inner { padding: 20px; }
-  /* トグルが無い(=常に展開)ため、本文冒頭の区切り線は不要。 */
+  .summary-desktop-heading {
+    padding: 20px 20px 12px;
+    border-bottom: var(--rule-hairline);
+  }
+  .summary-body-inner { padding: 12px 20px 20px; }
+  /* 見出し側に既に区切り線があるため、本文冒頭で二重に引かない。 */
   .summary-totals { border-top: none; padding-top: 0; }
 }
 
@@ -724,26 +791,42 @@ main {
 }
 
 /* ---------------------------------------------------------------------
-   hover/active状態。
+   hover/active状態(Codexレビューv1.4指摘I2: 汎用ルールの詳細度が主CTAの専用hover/active
+   より高く、主CTAのhover/activeがほぼ読めなくなっていた)。
+   汎用ルールは`:where(button, [role="button"])`で型セレクタ部分の詳細度を無効化し、
+   詳細度を(0,0,3,0)まで下げる。主CTA(.capture-primary)とサムネイル閉じるボタンは
+   `button.`修飾子を付けて詳細度(0,0,3,1)を確保し、詳細度勝負でも確実に上書きする
+   (ソース順だけに頼らない)。
    --------------------------------------------------------------------- */
-button:not(:disabled):not([aria-pressed="true"]):hover,
-[role="button"]:not(:disabled):not([aria-pressed="true"]):hover {
+:where(button, [role="button"]):not(:disabled):not([aria-pressed="true"]):hover {
   background: color-mix(in srgb, var(--ink) 6%, var(--paper));
 }
-button:not(:disabled):not([aria-pressed="true"]):active,
-[role="button"]:not(:disabled):not([aria-pressed="true"]):active {
-  background: color-mix(in srgb, var(--ink) 12%, var(--paper));
+:where(button, [role="button"]):not(:disabled):not([aria-pressed="true"]):active {
+  /* 12%→8%: ink-fadedテキストの上でも実描画状態でAA(4.5:1)を確保する
+     (Codexレビューv1.4指摘I1: 12%ウォッシュではink-faded文字が約4.18:1にとどまり
+     AA未達だった)。 */
+  background: color-mix(in srgb, var(--ink) 8%, var(--paper));
   transform: translateY(1px);
 }
 
-.capture-primary:not(:disabled):hover, .manual-entry > button[type="submit"]:not(:disabled):hover,
+button.capture-primary:not(:disabled):hover, .manual-entry > button[type="submit"]:not(:disabled):hover,
 .summary-panel .panel-actions button:first-child:not(:disabled):hover {
   background: color-mix(in srgb, var(--paper) 15%, var(--ink));
 }
-.capture-primary:not(:disabled):active, .manual-entry > button[type="submit"]:not(:disabled):active,
+button.capture-primary:not(:disabled):active, .manual-entry > button[type="submit"]:not(:disabled):active,
 .summary-panel .panel-actions button:first-child:not(:disabled):active {
   background: color-mix(in srgb, var(--paper) 25%, var(--ink));
   transform: translateY(1px);
+}
+
+/* サムネイル拡大の閉じるボタンも紙色文字(オーバーレイの黒背景上)のため、汎用hoverの
+   薄い紙色背景を継承するとほぼ読めなくなる。専用のインク濃色系hover/activeを定義する
+   (Codexレビューv1.4指摘I2)。`button.`+`:not(:disabled)`で詳細度(0,0,3,1)を確保し、
+   汎用ルール(0,0,3,0)より確実に勝たせる。 */
+button.thumb-overlay-close:not(:disabled):hover,
+button.thumb-overlay-close:not(:disabled):active {
+  background: rgb(23 23 21 / 75%);
+  color: var(--paper);
 }
 
 .summary-panel .panel-actions button:last-child:not(:disabled):hover {
@@ -754,11 +837,14 @@ button:not(:disabled):not([aria-pressed="true"]):active,
   transform: translateY(1px);
 }
 
+/* 押下状態の背景は`--stamp`80%混ぜ(文字はink、約5.66:1)。文字がinkのため、従来のように
+   hover/activeでinkをさらに混ぜて暗くすると逆にコントラストが落ちる。紙側へ寄せて
+   明るくする方向で押下フィードバックを出す(Codexレビューv1.4指摘I1)。 */
 .sign-toggle[aria-pressed="true"]:hover {
-  background: color-mix(in srgb, var(--ink) 10%, var(--stamp));
+  background: color-mix(in srgb, var(--stamp) 70%, var(--paper));
 }
 .sign-toggle[aria-pressed="true"]:active {
-  background: color-mix(in srgb, var(--ink) 20%, var(--stamp));
+  background: color-mix(in srgb, var(--stamp) 60%, var(--paper));
   transform: translateY(1px);
 }
 

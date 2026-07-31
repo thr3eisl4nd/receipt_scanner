@@ -21,10 +21,40 @@ function row(overrides: Partial<Row> = {}): Row {
   };
 }
 
+/** スマホ・タブレット(<1024px、既定折りたたみ)で本文操作ボタンをクリックする前に
+ *  展開しておくためのヘルパー(Codexレビュー v1.4指摘I4: 既定値をexpanded:falseへ変更
+ *  したため、本文内のボタンは展開しないとアクセシビリティツリー上見つからない)。 */
+function expandSummary() {
+  fireEvent.click(screen.getByRole("button", { name: /集計を展開/ }));
+}
+
+/** `window.matchMedia`をPC(>=1024px)向けにモックする(jsdomは未実装のため、既定では
+ *  `useMediaQuery`は常にfalse=モバイル扱いを返す。Codexレビュー v1.4指摘I3のPC分岐を
+ *  検証するために使う)。 */
+function mockDesktopMatchMedia(matches: boolean) {
+  const mql = {
+    matches,
+    media: "",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => true,
+    onchange: null,
+  } as unknown as MediaQueryList;
+  Object.defineProperty(window, "matchMedia", {
+    value: vi.fn().mockReturnValue(mql),
+    writable: true,
+    configurable: true,
+  });
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  // @ts-expect-error jsdomの既定(matchMedia未実装)へ戻す。
+  delete window.matchMedia;
 });
 
 describe("SummaryPanel", () => {
@@ -128,6 +158,9 @@ describe("SummaryPanel", () => {
     const state: AppState = { month: "2026-07", people: twoPeople, saveFailed: false, rows: [] };
     render(<SummaryPanel state={state} onNewMonth={onNewMonth} />);
 
+    // 既定は折りたたみ(Codexレビュー v1.4指摘I4)のため、本文操作ボタンは展開してから
+    // クリックする。
+    expandSummary();
     fireEvent.click(screen.getByRole("button", { name: "新しい月を始める" }));
     expect(onNewMonth).toHaveBeenCalledTimes(1);
   });
@@ -144,6 +177,7 @@ describe("SummaryPanel", () => {
       rows: [row({ id: "a", payerId: HUSBAND.id, amountYen: 1000 })],
     };
     render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
+    expandSummary();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "結果をコピー" }));
@@ -172,6 +206,7 @@ describe("SummaryPanel", () => {
       rows: [row({ id: "a", status: "failed", amountYen: null })],
     };
     render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
+    expandSummary();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "結果をコピー" }));
@@ -189,6 +224,7 @@ describe("SummaryPanel", () => {
 
     const state: AppState = { month: "2026-07", people: twoPeople, saveFailed: false, rows: [row({ id: "a" })] };
     render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
+    expandSummary();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "結果をコピー" }));
@@ -199,7 +235,7 @@ describe("SummaryPanel", () => {
     expect(alertSpy).toHaveBeenCalledWith("コピーできませんでした");
   });
 
-  it("折りたたみトグル(設計ドキュメント§17.9): 既定は展開状態で、トグルで合計行だけのコンパクト表示に切り替わる", () => {
+  it("折りたたみトグル(設計ドキュメント§17.9改訂・Codexレビュー v1.4指摘I4): 既定は折りたたみ状態で、トグルで展開・再度の折りたたみができる", () => {
     const state: AppState = {
       month: "2026-07",
       people: twoPeople,
@@ -208,25 +244,73 @@ describe("SummaryPanel", () => {
     };
     const { container } = render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
 
-    // 既定(expanded)では合計行(トグル)にも4,000円(全員の合計)が出ており、
-    // 展開中の内訳(3,000円/1,000円)も両方アクセス可能。
-    const toggle = screen.getByRole("button", { name: "集計を折りたたむ" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    // 既定(折りたたみ)でも合計行(トグル)には4,000円(全員の合計)が出ているが、
+    // 内訳(3,000円/1,000円)を含む本文はhidden属性でアクセシビリティツリーから
+    // 除外されている(hidden属性はテキストノード自体を削除するわけではないため、
+    // ここでは`hidden`プロパティで検証する。`getByText`はhidden配下でも見つかって
+    // しまうため内訳の非表示確認には使わない)。
+    const toggle = screen.getByRole("button", { name: /集計を展開/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(toggle.textContent).toContain("4,000円");
     const body = container.querySelector(".summary-body") as HTMLElement;
+    expect(body.hidden).toBe(true);
+
+    // トグルを押すと展開され、内訳(本文)がhidden属性で見えるようになる。
+    fireEvent.click(toggle);
+    const expandedToggle = screen.getByRole("button", { name: /集計を折りたたむ/ });
+    expect(expandedToggle.getAttribute("aria-expanded")).toBe("true");
     expect(body.hidden).toBe(false);
     expect(screen.getByText("3,000円")).toBeTruthy();
 
-    // トグルを押すと折りたたまれ、内訳(本文)はhidden属性で隠れる。
-    fireEvent.click(toggle);
-    const collapsedToggle = screen.getByRole("button", { name: "集計を展開" });
-    expect(collapsedToggle.getAttribute("aria-expanded")).toBe("false");
+    // もう一度押すと折りたたみに戻る。
+    fireEvent.click(expandedToggle);
+    expect(screen.getByRole("button", { name: /集計を展開/ }).getAttribute("aria-expanded")).toBe("false");
     expect(body.hidden).toBe(true);
+  });
 
-    // もう一度押すと展開に戻る。
-    fireEvent.click(collapsedToggle);
-    expect(screen.getByRole("button", { name: "集計を折りたたむ" }).getAttribute("aria-expanded")).toBe("true");
+  it("折りたたみトグルは`aria-label`でボタン名を丸ごと上書きせず、見た目のラベル(合計・金額)を含んだアクセシブルネームを構成する(Codexレビュー v1.4指摘I5: WCAG 2.5.3 Label in Name)", () => {
+    const state: AppState = {
+      month: "2026-07",
+      people: twoPeople,
+      saveFailed: false,
+      rows: [
+        row({ id: "a", payerId: HUSBAND.id, amountYen: 4000 }),
+        row({ id: "b", payerId: WIFE.id, status: "needs-review", amountYen: 0 }),
+      ],
+    };
+    render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
+
+    const toggle = screen.getByRole("button", { name: /^合計4,000円/ });
+    // 見た目のラベル「合計」「4,000円」がアクセシブルネームの先頭に含まれる(Label in Name)。
+    expect(toggle.textContent?.startsWith("合計")).toBe(true);
+    // 折りたたみ時、未確認件数はドットが`aria-hidden`でも`.sr-only`テキストとして
+    // アクセシブルネームに含まれる(従来はドットのみでスクリーンリーダーへ伝わらなかった)。
+    expect(toggle.textContent).toContain("未確認 1件");
+  });
+
+  it("PC(>=1024px、Codexレビュー v1.4指摘I3): 折りたたみトグルの代わりに「合計」見出しと全員合計を常時表示し、本文は常に表示状態(hidden=false)になる", () => {
+    mockDesktopMatchMedia(true);
+    const state: AppState = {
+      month: "2026-07",
+      people: twoPeople,
+      saveFailed: false,
+      rows: [row({ id: "a", payerId: HUSBAND.id, amountYen: 3000 }), row({ id: "b", payerId: WIFE.id, amountYen: 1000 })],
+    };
+    const { container } = render(<SummaryPanel state={state} onNewMonth={vi.fn()} />);
+
+    // トグルボタン自体が存在しない(PCでは折りたたみに意味が無いため)。
+    expect(screen.queryByRole("button", { name: /集計を(展開|折りたたむ)/ })).toBeNull();
+
+    const heading = container.querySelector(".summary-desktop-heading") as HTMLElement;
+    expect(heading).toBeTruthy();
+    expect(heading.textContent).toContain("合計");
+    expect(heading.textContent).toContain("4,000円");
+
+    // 本文の`hidden`属性は常にfalse(CSSのdisplay:blockでの上書きに頼らない、指摘I3)。
+    const body = container.querySelector(".summary-body") as HTMLElement;
     expect(body.hidden).toBe(false);
+    expect(screen.getByText("3,000円")).toBeTruthy();
+    expect(screen.getByText("1,000円")).toBeTruthy();
   });
 
   it("マウント時にResizeObserverで実高さを--summary-panel-heightへ反映し、アンマウントで解除する(Codexレビュー v1.2再指摘I2)", () => {
