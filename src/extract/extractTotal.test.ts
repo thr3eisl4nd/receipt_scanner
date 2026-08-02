@@ -239,4 +239,124 @@ describe("extractTotal", () => {
     expect(extractTotal(fx.genkei).status).toBe("auto-high");
     expect(extractTotal(fx.truncated).status).toBe("failed");
   });
+
+  // --- task-20: 実写真(real-photos/IMG_0201.jpeg)3領域のper-region OCR実測
+  // (`.superpowers/sdd/task-20-report.md`)で新たに観測した崩れパターン ---
+
+  test("観測済みの崩れバリアント(今計/合十)もneeds-reviewまで回復するが、auto-highにはならない(task-20)", () => {
+    // 「今計」はtask-19調査、「合十」は本タスクで3回連続再現した「合計」の崩れ。
+    for (const variant of ["今計", "合十"]) {
+      const r = extractTotal([line(variant, 140), line("¥1,332", 140, 200)]);
+      expect(r.status).toBe("needs-review");
+      expect(r.amountYen).toBe(1332);
+    }
+  });
+
+  test("「取引金額」の「取」脱落崩れ(引金額/引金额)はneeds-reviewまで回復する(task-20、実写真左領域実測)", () => {
+    for (const variant of ["引金額", "引金额"]) {
+      const r = extractTotal([line(variant, 140), line("￥3,084", 140, 200)]);
+      expect(r.status).toBe("needs-review");
+      expect(r.amountYen).toBe(3084);
+      expect(r.candidates[0]).toBe(3084);
+    }
+  });
+
+  test("安全弁: 正しくOCRできた「取引金額」はラベルとして扱わない(task-20)", () => {
+    // 実写真右領域で、正しく認識された「取引金額」ラベルが無関係な断片金額「¥3」と
+    // 同じ行に存在するケースを実測した(`.superpowers/sdd/task-20-report.md`)。これを
+    // ラベルとして許可すると、src/ocr/queue.tsのSTATUS_RANK方式リトライ(同ランクへの
+    // 遷移では上書きしない)により、1回目の認識がneeds-review(誤った値のまま)で
+    // 確定してしまい、2回目の再試行(コントラスト強調)で正しい合計が取れていても
+    // 採用されなくなる回帰を招く。そのため「取」を伴う正しい「取引金額」は意図的に
+    // スコープ外とし、この行だけが唯一のラベル候補であればfailedのままであるべき。
+    const r = extractTotal([line("取引金額", 140), line("¥3", 140, 200)]);
+    expect(r.status).toBe("failed");
+    expect(r.amountYen).toBeNull();
+  });
+
+  test("「金額」弱ラベル(task-20、実写真中央領域実測)はneeds-reviewまで回復し金額が候補1位になる", () => {
+    const r = extractTotal([line("金額", 140), line("￥331", 140, 200)]);
+    expect(r.status).toBe("needs-review");
+    expect(r.amountYen).toBe(331);
+    expect(r.candidates[0]).toBe(331);
+  });
+
+  test("「金額」弱ラベルは通貨表記なしでは候補にならない(task-20、既存の「合」弱ラベルと同じ安全弁)", () => {
+    const r = extractTotal([line("金額", 220), line("331", 220, 200)]);
+    expect(r.status).toBe("failed");
+    expect(r.amountYen).toBeNull();
+  });
+
+  test("「金額」弱ラベルはどの経路でもauto-highにならない(高confidence・好条件でも、task-20)", () => {
+    const r = extractTotal([
+      line("金額", 400, 0, 0.99),
+      line("¥331", 400, 200, 0.99),
+    ]);
+    expect(r.status).toBe("needs-review");
+  });
+
+  test("敵対テスト: 「金額」が明細の列見出しでも、離れた場所の本物の「合計」に勝てない(task-20)", () => {
+    // 「品名」「単価」「金額」が別々のboxとして並ぶ列見出し(一般的なレイアウト)の
+    // 直下に明細行の価格が来ても、「金額」経由の弱い候補(最大45点)が本物の
+    // 「合計」(50点)に勝ってトップ候補に来てしまわないことを確認する。
+    const r = extractTotal([
+      line("品名", 40, 0), line("単価", 40, 150), line("金額", 40, 300),
+      line("じゃがいも", 80, 0), line("¥150", 80, 200),
+      line("にんじん", 120, 0), line("¥120", 120, 200),
+      line("合計", 300, 0), line("¥270", 300, 200),
+    ]);
+    expect(r.status).toBe("auto-high");
+    expect(r.amountYen).toBe(270);
+  });
+
+  // --- Codexレビュー(task-20)で追加検出された敵対テスト ---
+
+  test("敵対テスト: 「税抜」+「金額」に分割されたOCR行は候補にならない(税抜金額≠合計、Codexレビュー指摘)", () => {
+    // 「税抜金額」がOCRで「税抜」「金額」の2boxに分割されると、「金額」だけが弱ラベルの
+    // 完全一致条件をすり抜けて拾われてしまう。「税抜」をREJECT_LABELSに追加したことで、
+    // 同一行の「税抜」により候補ごと除外されることを確認する。
+    const noOther = extractTotal([line("税抜", 100, 0), line("金額", 100, 60), line("¥500", 100, 200)]);
+    expect(noOther.status).toBe("failed");
+    expect(noOther.amountYen).toBeNull();
+
+    const withRealTotal = extractTotal([
+      line("税抜", 100, 0), line("金額", 100, 60), line("¥500", 100, 200),
+      line("合計", 300, 0), line("¥1,650", 300, 200),
+    ]);
+    expect(withRealTotal.status).toBe("auto-high");
+    expect(withRealTotal.amountYen).toBe(1650);
+    expect(withRealTotal.candidates).toEqual([1650]); // 税抜金額の500がノイズ候補として残らない
+  });
+
+  test("敵対テスト: 「値引金額」「割引金額」「代引金額」は「引金額」崩れパターンとして誤爆しない(Codexレビュー指摘)", () => {
+    // 当初の実装(否定後読み `/(?<!取)引金[額额]/`)はこれらに部分一致してしまっていた。
+    // 行頭アンカーへの変更で、「引金額」が行の先頭に来る場合のみを対象にする。
+    for (const label of ["値引金額", "割引金額", "代引金額"]) {
+      const sameLine = extractTotal([line(`${label} ¥500`, 140)]);
+      expect(sameLine.status).toBe("failed");
+      expect(sameLine.amountYen).toBeNull();
+
+      const below = extractTotal([line(label, 140), line("¥500", 160, 200)]);
+      expect(below.status).toBe("failed");
+      expect(below.amountYen).toBeNull();
+    }
+  });
+
+  test("敵対テスト: 「只今計算中」は「今計」崩れパターンとして誤爆しない(Codexレビュー指摘)", () => {
+    // 当初の実装(部分一致)は「只今計算中」に「今計」が部分文字列として含まれるため
+    // 誤爆していた。行頭アンカーへの変更で解消したことを確認する。
+    const r = extractTotal([line("只今計算中", 140), line("¥500", 140, 200)]);
+    expect(r.status).toBe("failed");
+    expect(r.amountYen).toBeNull();
+  });
+
+  test("境界ケース: 「お取引金額」「取 引金額」(空白入り)は「取引金額」と同様に対象外のまま(task-20)", () => {
+    // どちらも「取」を伴う(正しい、または空白で分割された)読みであり、右領域で観測した
+    // 「正しい取引金額+無関係な断片金額」の危険パターンと同種のため、意図的に対象外。
+    for (const label of ["お取引金額", "取 引金額"]) {
+      const r = extractTotal([line(label, 140), line("¥3,084", 140, 200)]);
+      expect(r.status).toBe("failed");
+      expect(r.amountYen).toBeNull();
+    }
+  });
 });

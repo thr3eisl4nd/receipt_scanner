@@ -42,14 +42,66 @@ const STRONG_LABELS = [
  * `LabelKind`を`exact`/`corrupted`/`fuzzy`に分離し、`eligible`判定で`exact`のみを
  * auto-high対象にする安全弁を設けた。`failed → needs-review`の回復効果自体は
  * auto-highを許可しなくても維持される。
+ *
+ * task-20追記: 実写真(`real-photos/IMG_0201.jpeg`)3領域のper-region OCR実測
+ * (`.superpowers/sdd/task-20-report.md`)で新たに観測した「合計」の崩れ「今計」
+ * (task-19調査で観測、本タスクでは別OCR実行での再現はしていないが同一写真・同一
+ * パイプラインでの既存観測のため採用)・「合十」(本タスクで3回連続再現)を追加。
+ *
+ * Codexレビュー(task-20)指摘: 単純な部分一致だと「只今計算中」が「今計」を
+ * 部分文字列として含んでしまい誤爆する(実際に`/今計/.test("只今計算中")`が
+ * `true`になることを確認済み)。そのため`^\s*`で行頭アンカーし、直後は
+ * 行末か「(:|：)?空白?金額らしき文字」に限定した(下記`STRONG_LABEL_CORRUPTED_VARIANTS_NO_TORI`
+ * と同じ考え方)。既存4バリアント(含計/合针/合计/台計)は前回タスクで既にレビュー済みの
+ * ためアンカー化は本タスクのスコープ外とし、新規追加分のみ対象にした。
  */
-const STRONG_LABEL_CORRUPTED_VARIANTS = [/含計/, /合针/, /合计/, /台計/];
+const STRONG_LABEL_CORRUPTED_VARIANTS = [
+  /含計/,
+  /合针/,
+  /合计/,
+  /台計/,
+  /^\s*(?:今計|合十)(?=\s*(?:$|[:：]?\s*[¥￥\d]))/,
+];
+
+/**
+ * task-20追記: 「取引金額」(クレジット売上票で頻出するラベル)が、先頭の「取」が
+ * 脱落して「引金額」/「引金额」(簡体字寄りの字形)に崩れるパターン
+ * (`.superpowers/sdd/task-20-report.md`実測、`real-photos/IMG_0201.jpeg`左領域で
+ * 3回連続再現)。
+ *
+ * 正しくOCRできた「取引金額」自体は意図的に**含めない**。実測で、同一写真の別領域
+ * (右領域)に「取引金額」という**正しい**ラベルが、断片的にしか読めなかった金額
+ * (「¥3」、おそらく「¥3,684」の読み取り欠損)と同じ行に存在するケースを確認した。
+ * `src/ocr/queue.ts`の`runOcrPipeline`内のリトライ判定は`STATUS_RANK`
+ * (failed<needs-review<auto-high)で「同ランクへの遷移では上書きしない」設計のため、
+ * 1回目の認識で「取引金額」をラベルとして許可してしまうと、1回目の(誤った値のままの)
+ * needs-reviewがqueueの最終結果として採用されてしまい(UI上はneeds-reviewとして
+ * 要確認表示になるだけで、auto-highのように自動確定するわけではないが、2回目
+ * (コントラスト強調再試行)で正しい合計(「合十」経由)が取れていても
+ * needs-review→needs-reviewの同ランクなので採用されない)。つまり「正しくOCRできた
+ * 取引金額」を安易にラベルとして許可すると、かえって同一写真の別領域を退行させる。
+ * このため「取」が脱落した崩れ形のみを対象にし、正しい「取引金額」はスコープ外として
+ * 見送った(既存の安全弁と同じ考え方: 疑わしきは対象を狭める)。
+ *
+ * Codexレビュー(task-20)指摘: 当初は否定後読み`/(?<!取)引金[額额]/`だったが、
+ * 「値引金額」「割引金額」「代引金額」のような無関係語にも「引金額」が部分文字列として
+ * 含まれてしまい誤爆することが判明した(実際に`/(?<!取)引金[額额]/.test("値引金額")`が
+ * `true`になることを確認済み。なお「値引|割引」はREJECT_LABELSに含まれるが、
+ * `corruptedLines`の判定はREJECT_LABELSを見ないため無防備だった)。行頭アンカー
+ * (`^\s*`)に変更することで、この問題と「取引金額」除外の両方を同時に解決した
+ * (「引金額」が行の**先頭**に来るのは「取」が脱落した崩れ形だけであり、「値引金額」
+ * 「取引金額」はどちらも「引金額」が行の途中から始まるため`^`に一致しない)。
+ * 副次的に否定後読み自体が不要になった(古いJS実行環境での対応状況を気にしなくて済む)。
+ * 「取 引金額」のように空白で分割された崩れ方(境界ケース)は本パターンでは
+ * 引き続き検出できない(スコープ外、安全側に倒れるだけなので実害はない)。
+ */
+const STRONG_LABEL_CORRUPTED_VARIANTS_NO_TORI = [/^\s*引金[額额](?=\s*(?:$|[:：]?\s*[¥￥\d]))/];
 
 const REJECT_LABELS = [
   /小計/,
   /(?:8|10)\s*%対象/,
   /課税対象/,
-  /消費税|内税|外税|税額|税率/,
+  /消費税|内税|外税|税額|税率|税抜/,
   /預り|釣り?銭?|お釣/,
   /現金|クレジット|電子マネー|ポイント|残高/,
   /値引|割引/,
@@ -93,12 +145,34 @@ const WEAK_LABEL_BELOW_SCORE = 15;
  *
  * 安全弁(調査Phase3仮説A「fuzzyExcludeRejectMatches」相当): REJECT_LABELSに一致する
  * 行は弱ラベルとして扱わない。
+ *
+ * task-20追記: 「金額」(2文字、実測`.superpowers/sdd/task-20-report.md`
+ * `real-photos/IMG_0201.jpeg`中央領域、3回連続再現)も弱ラベルとして追加した。
+ * こちらは「合」と異なりOCRの字形崩れではなく、レシートに実際に印字されている
+ * 汎用ラベル(Codexレビュー指摘、task-20)。「金額」単独は品名/単価/金額のような
+ * 明細の**列見出し**としても頻出するため(STRONG_LABELSに含めない既存判断の理由
+ * そのもの)、既存の「合」弱ラベルと全く同じ安全弁(通貨表記必須・REJECT_LABELS
+ * 同居行を除外・スコア上限45点でauto-highの60点に構造的に届かない)をそのまま適用する。
+ * 敵対テスト(列見出し「金額」+明細行の下で、離れた場所に本物の「合計」がある
+ * ケース、および「税抜」+「金額」に分割されたOCR行のケース。後者はREJECT_LABELSへ
+ * 「税抜」を追加して防いだ)で、本物の合計を「金額」経由の候補が上書きしないことを
+ * 確認済み(`extractTotal.test.ts`)。
+ *
+ * 既知の残存リスク(Codexレビュー指摘、task-20): 「金額」経由の弱ラベル候補が
+ * 1回目の認識で誤った値のneeds-reviewを作ってしまうと、`src/ocr/queue.ts`の
+ * `STATUS_RANK`同ランク非上書き設計により、2回目の再試行で正しい合計が取れても
+ * 採用されない可能性が理論上ある。ただしこれは「金額」固有の新規リスクではなく、
+ * 既存の「合」弱ラベル・既存の字形崩れ4バリアントにも同様に当てはまる、この
+ * 弱ラベル/corrupted設計全体に元々内在するトレードオフである。queue.ts側の
+ * リトライ判定をラベル品質(exact/corrupted/fuzzyの強さ)まで見て同ランク内でも
+ * 更新するよう拡張する対応は本タスクのスコープ外として見送った(詳細は
+ * `.superpowers/sdd/task-20-report.md`の懸念点を参照)。
  */
 function isWeakLabelLine(normalizedText: string): boolean {
   const t = normalizedText.trim();
   if (t.length === 0) return false;
   if (REJECT_LABELS.some((re) => re.test(t))) return false;
-  return t === "合"; // 実機で観測済みの脱落のみ許可(Codexレビュー指摘I2)
+  return t === "合" || t === "金額"; // 実機で観測済みの脱落(合)・実在ラベル(金額)のみ許可(Codexレビュー指摘I2、task-20)
 }
 
 type RawCandidate = {
@@ -223,7 +297,10 @@ export function extractTotal(lines: OcrLine[]): ExtractResult {
   const exactLines = lines.filter((l) => STRONG_LABELS.some((re) => re.test(norm(l.text))));
   const exactSet = new Set(exactLines);
   const corruptedLines = lines.filter(
-    (l) => !exactSet.has(l) && STRONG_LABEL_CORRUPTED_VARIANTS.some((re) => re.test(norm(l.text))),
+    (l) =>
+      !exactSet.has(l) &&
+      (STRONG_LABEL_CORRUPTED_VARIANTS.some((re) => re.test(norm(l.text))) ||
+        STRONG_LABEL_CORRUPTED_VARIANTS_NO_TORI.some((re) => re.test(norm(l.text)))),
   );
   const corruptedSet = new Set(corruptedLines);
   const rejectLines = lines.filter((l) => REJECT_LABELS.some((re) => re.test(norm(l.text))));
