@@ -1,6 +1,10 @@
 .superpowers/
 spike-results/
 
+# Real photos with personal information - never commit
+IMG_*.jpeg
+real-photos/
+
 # Logs
 logs
 *.log

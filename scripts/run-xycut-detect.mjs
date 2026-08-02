@@ -38,6 +38,23 @@ if (!args.out) throw new Error("--out <detections.json> is required");
 const manifest = JSON.parse(readFileSync(path.join(args.imagesDir, "manifest.json"), "utf8"));
 
 const DETECT_LONG_EDGE = 1200; // §16.1: パス1は長辺1200pxで検出専用実行
+// 本番(`src/ocr/ppuPaddleEngine.ts`のDETECT_PADDING_VERTICAL/HORIZONTAL)と同じ既定値。
+// [task-19実写真調査] このデフォルトを付けずに`service.detect()`を呼ぶと`ppu-paddle-ocr`
+// 自身のDetectionOptions既定値(0.4/0.6)が使われ、box同士が本番より過剰に肥大化して
+// 隣接レシートの行が誤って結合されやすくなる(本番との重大な乖離。実写真での誤診断の
+// 原因になった。詳細は`.superpowers/sdd/task-19-report.md`)。`--paddingVertical`/
+// `--paddingHorizontal`で明示的に上書きすれば従来通り実験もできる。
+const DEFAULT_DETECT_PADDING_VERTICAL = 0.1;
+const DEFAULT_DETECT_PADDING_HORIZONTAL = 0.15;
+
+function parsePaddingArg(name, raw, fallback) {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`--${name} must be a non-negative finite number (got ${raw})`);
+  return n;
+}
+const effectivePaddingVertical = parsePaddingArg("paddingVertical", args.paddingVertical, DEFAULT_DETECT_PADDING_VERTICAL);
+const effectivePaddingHorizontal = parsePaddingArg("paddingHorizontal", args.paddingHorizontal, DEFAULT_DETECT_PADDING_HORIZONTAL);
 
 /** 長辺をtargetへ合わせて縮小したcanvasを作る(§16.1パス1相当)。 */
 function drawScaledToLongEdge(image, targetLongEdge) {
@@ -65,47 +82,55 @@ async function main() {
   console.error(`initialize() done in ${Date.now() - t0}ms`);
 
   const results = [];
-  for (const entry of manifest) {
-    const img = await loadImage(entry.path);
-    const { canvas, scale } = drawScaledToLongEdge(img, DETECT_LONG_EDGE);
+  try {
+    for (const entry of manifest) {
+      const img = await loadImage(entry.path);
+      const { canvas, scale } = drawScaledToLongEdge(img, DETECT_LONG_EDGE);
 
-    const detectOptions = {};
-    if (args.paddingVertical !== undefined) detectOptions.paddingVertical = Number(args.paddingVertical);
-    if (args.paddingHorizontal !== undefined) detectOptions.paddingHorizontal = Number(args.paddingHorizontal);
+      const detectOptions = { paddingVertical: effectivePaddingVertical, paddingHorizontal: effectivePaddingHorizontal };
 
-    const tDetect0 = Date.now();
-    const { boxes } = await service.detect(canvas, detectOptions);
-    const detectMs = Date.now() - tDetect0;
+      const tDetect0 = Date.now();
+      const { boxes } = await service.detect(canvas, detectOptions);
+      const detectMs = Date.now() - tDetect0;
 
-    // 検出canvas座標 → 元写真ピクセル座標へスケールし戻す(以降の処理・比較は
-    // 常に元解像度座標系で統一する)。
-    const boxesOriginalSpace = boxes.map((b) => ({
-      x: b.x / scale,
-      y: b.y / scale,
-      width: b.width / scale,
-      height: b.height / scale,
-    }));
+      // 検出canvas座標 → 元写真ピクセル座標へスケールし戻す(以降の処理・比較は
+      // 常に元解像度座標系で統一する)。
+      const boxesOriginalSpace = boxes.map((b) => ({
+        x: b.x / scale,
+        y: b.y / scale,
+        width: b.width / scale,
+        height: b.height / scale,
+      }));
 
-    console.error(
-      `${entry.file}: detect ${boxesOriginalSpace.length} boxes in ${detectMs}ms ` +
-        `(detection canvas ${canvas.width}x${canvas.height}, expected regions=${entry.expectedRegionCount})`,
-    );
+      console.error(
+        `${entry.file}: detect ${boxesOriginalSpace.length} boxes in ${detectMs}ms ` +
+          `(detection canvas ${canvas.width}x${canvas.height}, expected regions=${entry.expectedRegionCount})`,
+      );
 
-    results.push({
-      file: entry.file,
-      layout: entry.layout,
-      background: entry.background,
-      originalWidth: entry.photoWidth,
-      originalHeight: entry.photoHeight,
-      detectionWidth: canvas.width,
-      detectionHeight: canvas.height,
-      detectMs,
-      rawBoxCount: boxes.length,
-      boxes: boxesOriginalSpace,
-    });
+      results.push({
+        file: entry.file,
+        layout: entry.layout,
+        background: entry.background,
+        // [task-19実写真調査] manifest.jsonがphotoWidth/photoHeightを持たない場合(実写真の
+        // manifestは店舗・個人情報を含むためgitignore対象で、手動で最小限しか書かれないことが
+        // ある)、実画像の寸法へフォールバックする。undefinedのまま`measure-xycut-accuracy.mjs`
+        // 経由で`buildLayoutDecision`へ渡ると`imageWidth`/`imageHeight`がNaNになり、
+        // `minGutter`の計算がNaN化して「常に分割不採用」という紛らわしい誤診断を招く
+        // (実際にこの調査で踏んだ落とし穴。詳細は`.superpowers/sdd/task-19-report.md`)。
+        originalWidth: entry.photoWidth ?? img.width,
+        originalHeight: entry.photoHeight ?? img.height,
+        detectionWidth: canvas.width,
+        detectionHeight: canvas.height,
+        detectPaddingVertical: effectivePaddingVertical,
+        detectPaddingHorizontal: effectivePaddingHorizontal,
+        detectMs,
+        rawBoxCount: boxes.length,
+        boxes: boxesOriginalSpace,
+      });
+    }
+  } finally {
+    await service.destroy();
   }
-
-  await service.destroy();
   writeFileSync(args.out, JSON.stringify({ imagesDir: args.imagesDir, results }, null, 2));
   console.error(`wrote ${args.out} (${results.length} images)`);
 }
