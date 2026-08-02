@@ -59,8 +59,24 @@ function resolveOrtNumThreads(): number {
  * v6-tiny(ライブラリ既定)の辞書はひらがな・カタカナ・円記号を含まず
  * 日本語レシートでは実用にならないため、あえて small を選択している
  * (詳細は task-4-report.md 参照)。
- * WebGPU/WASMの選択はライブラリの自動判定・自動フォールバックに委ねる
- * (`session.executionProviders` を指定しない)。
+ *
+ * 実行プロバイダは常にCPU/WASM実行になる(`session.executionProviders` を
+ * 明示的に指定していないが、WebGPUが自動選択されることはない)。`ppu-paddle-ocr`の
+ * `BasePaddleOcrService`コンストラクタが`this.options.session`を
+ * `DEFAULT_SESSION_OPTIONS`(`executionProviders:["cpu"]`を含む)で先に埋めてしまうため、
+ * `PaddleOcrService`(web)側の「`session`が未指定/空ならWebGPU自動判定へ委ねる」という
+ * 分岐条件(`Object.keys(this.options.session).length===0`)が常にfalseになり、
+ * `initialize()`内の`_resolveSessionExecutionProviders()`は「ユーザーが
+ * executionProvidersを指定済み」と誤認して`getDefaultWebExecutionProviders()`
+ * (WebGPU可否を判定しWebGPU利用可能なら`["webgpu","wasm"]`を返す関数)を一切呼ばない。
+ * 結果として`executionProviders:["cpu"]`のまま`InferenceSession.create()`に渡るが、
+ * onnxruntime-webは`"cpu"`を`"wasm"`と同じバックエンド実装へ登録している
+ * (`registerBackend("cpu", wasmBackend2, 10)`。`registerBackend("wasm", wasmBackend2, 10)`と
+ * 実装インスタンスが同一)ため、`"cpu"`指定でも実行される中身は`"wasm"`指定と同一の
+ * WebAssemblyバックエンドであり、要は常にWASM実行になる。
+ * この既定値マージ順序の問題は`ppu-paddle-ocr`側のバグであり、本ファイル側で
+ * `session.executionProviders`を明示指定すれば回避できるが、現状は未対応
+ * (実機速度対策はcoi-serviceworker導入によるWASMマルチスレッド化で別途行っている)。
  */
 export function createPpuPaddleEngine(): OcrEngine {
   let service: PaddleOcrService | null = null;

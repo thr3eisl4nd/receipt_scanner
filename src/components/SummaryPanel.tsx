@@ -2,6 +2,8 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { buildSummaryText, computeTotals, formatDelta, type AppState } from "../state/reducer";
 import { personColorClass } from "../personColor";
 import { useMediaQuery } from "../useMediaQuery";
+import { DiagnosticsCopyButton } from "./DiagnosticsCopyButton";
+import type { PhotoDiagnostics } from "../ocr/queue";
 
 /** `.receipt-paper`側で本文末尾に予約する余白の基準にするCSSカスタムプロパティ名
  *  (Codexレビュー v1.2再指摘I2)。 */
@@ -11,7 +13,14 @@ const SUMMARY_PANEL_HEIGHT_VAR = "--summary-panel-height";
  *  1024px)`と一致させる、Codexレビュー v1.4指摘I3)。 */
 const DESKTOP_QUERY = "(min-width: 1024px)";
 
-type Props = { state: AppState; onNewMonth(): void };
+type Props = {
+  state: AppState;
+  onNewMonth(): void;
+  /** task-22: 実機診断データの取得関数。回復パネル(App.tsx)非表示時でも診断データを
+   *  回収できるよう、常時表示のこのパネルの隅にも目立たない同機能の導線を置く。
+   *  未指定ならこの導線自体を描画しない(SummaryPanel単体テストとの互換のため任意)。 */
+  getDiagnostics?: () => PhotoDiagnostics | null;
+};
 
 const yen = (n: number) => n.toLocaleString("ja-JP");
 
@@ -23,7 +32,7 @@ const yen = (n: number) => n.toLocaleString("ja-JP");
  * 自身が行う(§2 要件確定事項)。合計・サマリー文言生成はTask 6-7で実装・テスト済みの
  * `computeTotals`/`buildSummaryText`をそのまま使う。
  */
-export function SummaryPanel({ state, onNewMonth }: Props) {
+export function SummaryPanel({ state, onNewMonth, getDiagnostics }: Props) {
   const [copied, setCopied] = useState(false);
   const t = computeTotals(state.people, state.rows);
   const direction = formatDelta(t.totals, t.delta);
@@ -98,37 +107,47 @@ export function SummaryPanel({ state, onNewMonth }: Props) {
 
   return (
     <section ref={panelRef} className={`summary-panel${expanded ? " is-expanded" : ""}`} aria-label="集計">
-      {isDesktop ? (
-        // PC(>=1024px)専用の常時表示見出し(設計ドキュメント§17.9改訂、Codexレビュー
-        // v1.4指摘I3)。トグル操作自体が無いため、ボタンではなく非インタラクティブな
-        // 見出し行にする。
-        <div className="summary-desktop-heading">
-          <span className="summary-toggle-label">合計</span>
-          <b key={grandTotal} className="summary-toggle-amount">{yen(grandTotal)}円</b>
-        </div>
-      ) : (
-        // 折りたたみトグル(スマホ・タブレットのみ)。合計行だけのコンパクト表示を
-        // 兼ねる(設計ドキュメント§17.9)。`aria-label`でボタンの名前を丸ごと上書き
-        // せず、子要素(見えるテキスト+`.sr-only`の補足)から名前を構成することで
-        // 「合計 ○○円」という見た目のラベルが必ずアクセシブルネームに含まれるように
-        // する(Codexレビュー v1.4指摘I5: WCAG 2.5.3 Label in Name)。未確認件数も
-        // 折りたたみ時に`.sr-only`で伝える(従来はドットが`aria-hidden`のみで、
-        // 折りたたみ時に支援技術へ件数が伝わらなかった)。
-        <button
-          type="button"
-          className="summary-toggle"
-          aria-expanded={expanded}
-          aria-controls="summary-body"
-          onClick={() => setExpanded((v) => !v)}
-        >
-          <span className="summary-toggle-label">合計</span>
-          <b key={grandTotal} className="summary-toggle-amount">{yen(grandTotal)}円</b>
-          {t.unconfirmed > 0 && <span className="summary-toggle-flag" aria-hidden="true" />}
-          {t.unconfirmed > 0 && <span className="sr-only">、未確認 {t.unconfirmed}件</span>}
-          <span className="sr-only">{expanded ? "、集計を折りたたむ" : "、集計を展開"}</span>
-          <span className="summary-chevron" aria-hidden="true">{expanded ? "︿" : "﹀"}</span>
-        </button>
-      )}
+      {/* task-22: トグル/見出しと診断データ導線を横並びの行にまとめる。回復パネル
+          (App.tsx側、写真ごと・問題があるときのみ表示)を経由しなくても直近の実機診断
+          データを回収できるよう、常時表示のこのパネルにも控えめな導線を置く(過剰装飾は
+          しない: 折りたたみ状態に関わらず常に描画される小さなテキストボタンのみ)。
+          `getDiagnostics`未指定時(SummaryPanel単体利用)は描画しない。 */}
+      <div className="summary-topbar">
+        {isDesktop ? (
+          // PC(>=1024px)専用の常時表示見出し(設計ドキュメント§17.9改訂、Codexレビュー
+          // v1.4指摘I3)。トグル操作自体が無いため、ボタンではなく非インタラクティブな
+          // 見出し行にする。
+          <div className="summary-desktop-heading">
+            <span className="summary-toggle-label">合計</span>
+            <b key={grandTotal} className="summary-toggle-amount">{yen(grandTotal)}円</b>
+          </div>
+        ) : (
+          // 折りたたみトグル(スマホ・タブレットのみ)。合計行だけのコンパクト表示を
+          // 兼ねる(設計ドキュメント§17.9)。`aria-label`でボタンの名前を丸ごと上書き
+          // せず、子要素(見えるテキスト+`.sr-only`の補足)から名前を構成することで
+          // 「合計 ○○円」という見た目のラベルが必ずアクセシブルネームに含まれるように
+          // する(Codexレビュー v1.4指摘I5: WCAG 2.5.3 Label in Name)。未確認件数も
+          // 折りたたみ時に`.sr-only`で伝える(従来はドットが`aria-hidden`のみで、
+          // 折りたたみ時に支援技術へ件数が伝わらなかった)。
+          <button
+            type="button"
+            className="summary-toggle"
+            aria-expanded={expanded}
+            aria-controls="summary-body"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <span className="summary-toggle-label">合計</span>
+            <b key={grandTotal} className="summary-toggle-amount">{yen(grandTotal)}円</b>
+            {t.unconfirmed > 0 && <span className="summary-toggle-flag" aria-hidden="true" />}
+            {t.unconfirmed > 0 && <span className="sr-only">、未確認 {t.unconfirmed}件</span>}
+            <span className="sr-only">{expanded ? "、集計を折りたたむ" : "、集計を展開"}</span>
+            <span className="summary-chevron" aria-hidden="true">{expanded ? "︿" : "﹀"}</span>
+          </button>
+        )}
+        {getDiagnostics && (
+          <DiagnosticsCopyButton getDiagnostics={getDiagnostics} className="diagnostics-link" label="診断データ" />
+        )}
+      </div>
       <div id="summary-body" className="summary-body" hidden={bodyHidden}>
         <div className="summary-body-inner">
           {/* 「合計」ラベルは折りたたみトグル(スマホ・タブレット)または見出し(PC)側に

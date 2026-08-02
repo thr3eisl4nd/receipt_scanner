@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within, cleanup } from "@testing-library/react";
 import type { OcrEngine } from "./ocr/engine";
 import type { RowPatch } from "./state/reducer";
-import type { QueueStatusEvent, RegionDescriptor, RegionGroupFlags } from "./ocr/queue";
+import type { QueueStatusEvent, RegionDescriptor, RegionGroupFlags, PhotoDiagnostics } from "./ocr/queue";
 import type { FailureKind } from "./types";
 import { STORAGE_KEY } from "./state/storage";
 import App from "./App";
@@ -49,6 +49,8 @@ type Cb = {
   onStatus(event: QueueStatusEvent): void;
   // v1.3(§16.4): 複数領域検出時の通知。既存テストの大半は発火させない(単一領域のまま)。
   onRegions?(photoJobId: string, regions: RegionDescriptor[], flags: RegionGroupFlags): void;
+  // task-22: 検出パス実行時の実機診断データ。既存テストの大半は発火させない。
+  onDiagnostics?(photoJobId: string, diagnostics: PhotoDiagnostics): void;
   onThumbnail(id: string, blob: Blob): void;
   onPreview(id: string, blob: Blob): void;
   onResult(id: string, patch: RowPatch): void;
@@ -1430,5 +1432,131 @@ describe("App", () => {
 
     expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
     expect(container.querySelector(".region-group-recovery")).toBeNull();
+  });
+
+  // --- task-22(実機診断データのコピー機能)の統合テスト ---
+  // App.tsxが`onDiagnostics`を`lastDiagnosticsRef`へ配線し、SummaryPanel隅の常時表示
+  // 導線・回復パネルの両方から同じ最新診断データをコピーできることを検証する。
+
+  function sampleDiagnostics(): PhotoDiagnostics {
+    return {
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+      photoW: 4000,
+      photoH: 3000,
+      detectCanvasW: 1200,
+      detectCanvasH: 800,
+      rawBoxes: [{ x: 0.1, y: 0.2, width: 0.3, height: 0.4 }],
+      decision: { kind: "single", regions: [{ x: 0.1, y: 0.2, width: 0.3, height: 0.4 }] },
+    };
+  }
+
+  it("SummaryPanel隅の「診断データ」導線は常時表示され、onDiagnostics到着前はwindow.alert、到着後(有効なjobId)は最新データをコピーする(task-22)", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+
+    const { container } = render(<App />);
+
+    // 折りたたみ状態(既定)でも導線自体は見える(summary-bodyの外にある)。
+    const diagnosticsButton = screen.getByRole("button", { name: "診断データ" });
+
+    // まだ写真を読み込んでいない(onDiagnostics未発火)場合はコピーせず案内する。
+    fireEvent.click(diagnosticsButton);
+    expect(writeText).not.toHaveBeenCalled();
+    expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining("診断データがありません"));
+
+    // 写真を1枚読み込み、有効なjobId(enqueue()に渡したid、onRegions等と同じもの)で
+    // onDiagnosticsを発火する(Codexレビュー指摘: App.tsx側はjobIdが今も有効な行に
+    // 紐づくかをresolveActiveRowで検証してから採用する)。
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["photo"], "photo.jpg", { type: "image/jpeg" }));
+    const [jobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    const diagnostics = sampleDiagnostics();
+    act(() => {
+      capturedCb!.onDiagnostics!(jobId, diagnostics);
+    });
+
+    await act(async () => {
+      fireEvent.click(diagnosticsButton);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(diagnostics, null, 2));
+    expect(screen.getByRole("button", { name: "コピーしました" })).toBeTruthy();
+  });
+
+  it("行削除後に遅れて届いたonDiagnostics(旧jobId)は最新診断データを上書きしない(Codexレビュー指摘の回帰テスト、task-22)", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    selectFile(fileInputs[0] as HTMLInputElement, new File(["photo"], "photo.jpg", { type: "image/jpeg" }));
+    const [jobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    const validDiagnostics = sampleDiagnostics();
+    act(() => {
+      capturedCb!.onDiagnostics!(jobId, validDiagnostics);
+    });
+
+    // 行を削除する(invalidateJobForRowによりjobId→rowIdの紐づけが無効化される)。
+    fireEvent.click(screen.getByRole("button", { name: "レシート 1（1行目）を削除" }));
+    expect(container.querySelectorAll(".receipt-row")).toHaveLength(0);
+
+    // 削除後、同じ(今や無効な)jobIdで検出パスの結果が遅れて届いたとしても無視される。
+    const staleDiagnostics = { ...sampleDiagnostics(), photoW: 9999 };
+    act(() => {
+      capturedCb!.onDiagnostics!(jobId, staleDiagnostics);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "診断データ" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 上書きされず、削除前に確定した最新値(validDiagnostics)のままコピーされる。
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(validDiagnostics, null, 2));
+    expect(writeText).not.toHaveBeenCalledWith(JSON.stringify(staleDiagnostics, null, 2));
+  });
+
+  it("回復パネルにも「診断データをコピー」ボタンが表示され、SummaryPanel隅と同じ最新診断データをコピーできる(task-22)", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    const { container } = render(<App />);
+    const fileInputs = container.querySelectorAll('input[type="file"]');
+    const file = new File(["photo"], "photo.jpg", { type: "image/jpeg" });
+    selectFile(fileInputs[0] as HTMLInputElement, file);
+    const [photoJobId] = enqueueMock.mock.calls[0] as [string, File];
+
+    const diagnostics = sampleDiagnostics();
+    act(() => {
+      // 実運用では検出パス完了時にonDiagnosticsがonRegionsより先に発火する。
+      // photoJobId(元の写真ジョブのid)はこの時点でまだプレースホルダ行に紐づいた
+      // ままなのでresolveActiveRowの検証を通る。
+      capturedCb!.onDiagnostics!(photoJobId, diagnostics);
+      capturedCb!.onRegions!(photoJobId, [{ jobId: "amb-0", crop: { x: 0, y: 0, width: 1, height: 1 } }], {
+        ambiguous: true,
+        nearLimit: false,
+      });
+      capturedCb!.onResult("amb-0", { amountYen: 700, status: "needs-review", candidates: [700], processing: false });
+    });
+
+    await screen.findByText("写真全体を1枚として読み直す");
+    const recoveryButton = within(container.querySelector(".region-group-recovery") as HTMLElement).getByRole(
+      "button",
+      { name: "診断データをコピー" },
+    );
+
+    await act(async () => {
+      fireEvent.click(recoveryButton);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(diagnostics, null, 2));
   });
 });

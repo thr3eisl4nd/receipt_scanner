@@ -559,6 +559,9 @@ main {
   min-height: 44px; padding: 6px 12px; border-radius: var(--radius-sm);
   border: 1px solid var(--ink); background: var(--paper); color: var(--ink); font-weight: 600;
 }
+/* task-22: 「診断データをコピー」ボタンのコピー成功フィードバック(SummaryPanelの
+   「結果をコピー」と同じパルスアニメーションを踏襲)。 */
+.region-group-recovery button.is-copied { animation: copy-success-pulse 220ms ease-out; }
 
 .cancel-all {
   min-height: 44px; padding: 8px 14px; margin: 4px 0 16px;
@@ -618,18 +621,28 @@ main {
   box-shadow: var(--shadow-panel);
   max-width: 640px; margin: 0 auto;
 }
+
 @media (min-width: 768px) { .summary-panel { max-width: 720px; } }
 
+/* task-22: トグル/見出しと診断データ導線を横並びにする行コンテナ。以前は診断リンクを
+   `.summary-panel`へのabsolute配置で「隅」に置いていたが、トグルボタンの当たり判定・
+   チェブロン等と視覚的に重なるバグがあったため、flexの通常フローで隣に並べる方式へ
+   変更した(重ならない・タップ領域を奪わない)。 */
+.summary-topbar { display: flex; align-items: stretch; }
+
 .summary-toggle {
-  display: flex; align-items: center; gap: 8px; width: 100%;
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
   min-height: 48px; padding: 10px 16px;
   background: none; border: none; color: var(--ink); text-align: left;
 }
-/* 折りたたみ時(合計行だけの表示)はこのトグルが視覚上の最下端になるため、
+/* 折りたたみ時(合計行だけの表示)は`.summary-topbar`が視覚上の最下端になるため、
    safe-area分の余白をここへ持たせる。展開時は`.summary-body-inner`側が
    最下端になるので二重に確保しない。 */
 .summary-panel:not(.is-expanded) .summary-toggle {
   padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.summary-panel:not(.is-expanded) .diagnostics-link {
+  padding-bottom: calc(6px + env(safe-area-inset-bottom));
 }
 .summary-toggle-label {
   font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.3em; color: var(--ink-faded);
@@ -643,7 +656,24 @@ main {
 /* PC(>=1024px)専用の「合計」見出し(Codexレビューv1.4指摘I3)。トグルボタンの代わりに
    常時表示する非インタラクティブな見出し行で、`.summary-toggle-label`/
    `.summary-toggle-amount`を流用してトグルと同じ見た目にする。 */
-.summary-desktop-heading { display: flex; align-items: center; gap: 8px; }
+.summary-desktop-heading { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+
+/* task-22: 集計パネル隅の控えめな診断データ導線。折りたたみ状態に関わらず`.summary-topbar`
+   の一部として常時表示する(回復パネルが出ていない場合の唯一の回収経路になりうるため)が、
+   主要導線ではないので見た目は最小限にとどめる(装飾を増やさない)。タップ領域は
+   アプリ内の他のボタン(44px)と揃える(Codexレビュー指摘: 本機能の主対象である
+   iPhone実機でこそタップ領域を削るべきではない)。マウス操作前提のPC(>=1024px)
+   のみ32pxへ縮小する。 */
+.diagnostics-link {
+  flex: none; align-self: center;
+  min-height: 44px; padding: 6px 10px; border: none; background: none;
+  color: var(--ink-faded); font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  opacity: 0.7;
+}
+.diagnostics-link.is-copied { opacity: 1; color: var(--ink); animation: copy-success-pulse 220ms ease-out; }
+@media (min-width: 1024px) {
+  .diagnostics-link { min-height: 32px; }
+}
 
 /* 表示/非表示自体はJSX側の`hidden`属性(ネイティブセマンティクス、a11y上も正しく
    ツリーから除外される)で制御する。ここでは展開時の控えめな出現アニメーションのみ
@@ -665,7 +695,9 @@ main {
     overscroll-behavior: contain;
   }
 
-  .summary-toggle {
+  /* トグル単体ではなく`.summary-topbar`(トグル+診断リンク)をまとめてsticky化する
+     (task-22: 診断リンクがトグルと別々にスクロールして分離して見えるのを防ぐ)。 */
+  .summary-topbar {
     position: sticky;
     top: 0;
     z-index: 1;
@@ -743,7 +775,9 @@ main {
     max-height: calc(100vh - 80px);
     overflow-y: auto;
   }
-  .summary-desktop-heading {
+  /* task-22: 見出し単体ではなく`.summary-topbar`(見出し+診断リンク)へpadding/境界線を
+     移し、診断リンクも同じ行の一部として揃える。 */
+  .summary-topbar {
     padding: 20px 20px 12px;
     border-bottom: var(--rule-hairline);
   }
@@ -864,7 +898,9 @@ button.thumb-overlay-close:not(:disabled):active {
   .badge-confirmed, .badge-manual,
   .summary-panel.is-expanded .summary-body,
   .summary-amount, .summary-toggle-amount,
-  .summary-panel .panel-actions button:first-child.is-copied {
+  .summary-panel .panel-actions button:first-child.is-copied,
+  .region-group-recovery button.is-copied,
+  .diagnostics-link.is-copied {
     animation: none;
   }
   .print-cursor::before { animation: none; }

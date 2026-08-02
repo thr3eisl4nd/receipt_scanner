@@ -12,7 +12,7 @@ import {
 } from "../image/preprocess";
 import { loadSourceImage, type NormalizedRect, type SourceImage } from "../image/sourceImage";
 import { extractTotal } from "../extract/extractTotal";
-import { buildLayoutDecision, cropRectForRegion, DEFAULT_THRESHOLDS } from "./regionDetection";
+import { buildLayoutDecision, cropRectForRegion, DEFAULT_THRESHOLDS, type LayoutDecision } from "./regionDetection";
 
 export type { NormalizedRect } from "../image/sourceImage";
 
@@ -65,6 +65,91 @@ export type RegionDescriptor = { jobId: string; crop: NormalizedRect };
  */
 export type RegionGroupFlags = { ambiguous: boolean; nearLimit: boolean };
 
+/**
+ * task-22: 実機診断データ収集。
+ *
+ * iPhone Safari固有のマルチレシート誤分割(デスクトップでは再現せず、実機の`rawBoxes`
+ * 採取が必要)をユーザーの実機から1タップで回収できるようにするための、検出パス
+ * (パス1、`processNewPhoto`)実行時のスナップショット。画像データ・OCR認識テキストは
+ * 一切含めない(プライバシー)。座標はすべて検出用canvas(`detectCanvasW`×
+ * `detectCanvasH`、長辺`DETECT_LONG_EDGE`px)寸法に対する正規化座標(0..1、小数3桁に
+ * 丸め)で持つ(`buildLayoutDecision`に渡す座標系そのもの)。
+ */
+export type NormalizedBox = { x: number; y: number; width: number; height: number };
+
+export type PhotoDiagnostics = {
+  userAgent: string;
+  /** 元画像(EXIF回転補正後、検出用に縮小する前)の実寸。 */
+  photoW: number;
+  photoH: number;
+  /** 検出専用実行(パス1)に使ったcanvasの実寸。`rawBoxes`/`decision.regions`の正規化基準。 */
+  detectCanvasW: number;
+  detectCanvasH: number;
+  /** `OcrEngine.detect()`が返した生box(行マージ・oversized除外より前)。 */
+  rawBoxes: NormalizedBox[];
+  decision: { kind: LayoutDecision["kind"]; regions: NormalizedBox[] };
+};
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+/**
+ * 1軸分(x/width または y/height)の正規化(Codexレビュー指摘: 開始点とサイズを
+ * 独立に丸めると、丸め後に`start+size`が1をわずかに超えうる。例: 幅1200pxに対し
+ * `x=3,width=1197`は独立丸めだと`x:0.003`+`width:0.998`=`1.001`になる)。
+ * 開始点・終了点をそれぞれクランプ・丸めてから、丸め後の値同士の差としてサイズを
+ * 求めることで、`start+size`が丸め後の終了点と一致し1を超えないことを保証する。
+ */
+function normalizeAxis(start: number, size: number, total: number): { start: number; size: number } {
+  const safeTotal = total > 0 ? total : 1;
+  const clamp = (n: number) => Math.min(1, Math.max(0, n));
+  const from = round3(clamp(start / safeTotal));
+  const to = round3(clamp((start + size) / safeTotal));
+  return { start: from, size: round3(Math.max(0, to - from)) };
+}
+
+/** `w`/`h`が0以下(テストスタブ等の異常値)でも0除算しない防御込みの正規化。 */
+function normalizeBox(box: { x: number; y: number; width: number; height: number }, w: number, h: number): NormalizedBox {
+  const { start: x, size: width } = normalizeAxis(box.x, box.width, w);
+  const { start: y, size: height } = normalizeAxis(box.y, box.height, h);
+  return { x, y, width, height };
+}
+
+/** `LayoutDecision`の種別ごとにばらばらなフィールド名(`region`/`regions`/`fallbackRegion`)を1本化する。 */
+function regionsOfDecision(decision: LayoutDecision): { x: number; y: number; width: number; height: number }[] {
+  if (decision.kind === "single") return [decision.region];
+  if (decision.kind === "multiple") return decision.regions;
+  return [decision.fallbackRegion];
+}
+
+/**
+ * `processNewPhoto`から呼ぶ純粋関数として切り出す(単体テスト容易化・可読性)。
+ * `rawBoxes`/`decision.regions`は検出用canvas寸法(`detectCanvasW`×`detectCanvasH`)に
+ * 対する正規化座標へ変換する。
+ */
+export function buildPhotoDiagnostics(
+  photoW: number,
+  photoH: number,
+  detectCanvasW: number,
+  detectCanvasH: number,
+  rawBoxes: readonly OcrBox[],
+  decision: LayoutDecision,
+): PhotoDiagnostics {
+  return {
+    userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+    photoW,
+    photoH,
+    detectCanvasW,
+    detectCanvasH,
+    rawBoxes: rawBoxes.map((b) => normalizeBox(b, detectCanvasW, detectCanvasH)),
+    decision: {
+      kind: decision.kind,
+      regions: regionsOfDecision(decision).map((r) => normalizeBox(r, detectCanvasW, detectCanvasH)),
+    },
+  };
+}
+
 export type QueueCallbacks = {
   onStatus(event: QueueStatusEvent): void;
   // v1.3(§16.4): パス1完了時、1枚の写真が複数領域(レシート)に分割されたことを通知する。
@@ -73,6 +158,16 @@ export type QueueCallbacks = {
   // 省略可能(未指定の場合、複数領域が生じても何も通知されない=呼び出し側は
   // 単純化のため多重領域を無視できる)。
   onRegions?(photoJobId: string, regions: RegionDescriptor[], flags: RegionGroupFlags): void;
+  // task-22: 検出パス(パス1)実行時の実機診断データ。新規写真ジョブ(`processNewPhoto`)
+  // ごとに1回発火する(領域が1つ(kind:"single")の場合も含め、検出を実際に実行した
+  // 全ての新規写真で発火する。`crop`/`forceSingle`指定の再試行・回復導線では検出を
+  // やり直さないため発火しない)。画像データ・OCR認識テキストは含まない。
+  // `photoJobId`は`enqueue()`に渡したid(`onRegions`と同じ引数)そのもの
+  // (Codexレビュー指摘: これが無いと、呼び出し側は届いた診断データが現在も有効な
+  // 写真ジョブのものか検証できず、キャンセル・削除・月次リセット後に届いた古い
+  // 診断データで「最新」を誤って上書きしてしまう)。
+  // 省略可能(未指定なら何も収集されない=既存の呼び出し側は無視できる)。
+  onDiagnostics?(photoJobId: string, diagnostics: PhotoDiagnostics): void;
   // 処理済み(縮小済み)canvasから生成した320px級サムネイルBlobを行へ返す(Codexレビュー指摘I1)。
   // 呼び出し側はObject URL化し、置換時・行削除時・削除済み行への遅着時に確実にrevokeすること。
   onThumbnail(id: string, blob: Blob): void;
@@ -370,6 +465,16 @@ export function createOcrQueue(
     }
   }
 
+  /** 同上。task-22: 実機診断データ(`onDiagnostics`未指定なら何もしない、best-effort)。 */
+  function emitDiagnostics(photoJobId: string, diagnostics: PhotoDiagnostics): void {
+    if (disposed || !cb.onDiagnostics) return;
+    try {
+      cb.onDiagnostics(photoJobId, diagnostics);
+    } catch (err) {
+      console.error("OCR onDiagnostics callback failed:", photoJobId, err);
+    }
+  }
+
   /** 裸の`void run()`を一箇所に集約し、予期しないrejectを未処理のまま放置しない。 */
   function kick(): void {
     void run().catch((err) => {
@@ -577,6 +682,16 @@ export function createOcrQueue(
     const detectWidth = detectCanvas.width;
     const detectHeight = detectCanvas.height;
     releaseCanvas(detectCanvas);
+
+    // task-22: 検出パス実行時の実機診断データ収集(画像・認識テキストは含めない)。
+    // `decision.kind`に関わらず(single/multiple/ambiguousいずれも)発火する。
+    // `canceled(item)`(Codexレビュー指摘): dispose()/cancelAll()が既に呼ばれたジョブでは
+    // 発火しない(領域ループ内の他のcanceled()チェックと同じ考え方)。行単位の削除・
+    // 再試行による無効化は`queue.ts`側からは判別できないため、呼び出し側(App.tsx)が
+    // `photoJobId`で「現在も有効なジョブか」を別途検証する。
+    if (!canceled(item)) {
+      emitDiagnostics(item.id, buildPhotoDiagnostics(source.width, source.height, detectWidth, detectHeight, boxes, decision));
+    }
 
     if (decision.kind === "single") {
       // 1枚運用との互換: 写真全体を長辺1600pxへ正規化し直してOCRする(検出用1200pxの

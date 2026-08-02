@@ -4,12 +4,14 @@ import { PeopleManager } from "./components/PeopleManager";
 import { ReceiptRow } from "./components/ReceiptRow";
 import { ManualEntryForm } from "./components/ManualEntryForm";
 import { SummaryPanel } from "./components/SummaryPanel";
+import { DiagnosticsCopyButton } from "./components/DiagnosticsCopyButton";
 import {
   createOcrQueue,
   type OcrQueue,
   type QueueStatusEvent,
   type NormalizedRect,
   type RegionGroupFlags,
+  type PhotoDiagnostics,
 } from "./ocr/queue";
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
 import { reducer, toPersisted, fromPersisted, computeTotals, nextReceiptLabel, type AppState, type RowPatch } from "./state/reducer";
@@ -81,6 +83,12 @@ export default function App() {
   // v1.3(§16.5): 写真単位のグループ管理(非永続、photoJobId→グループ)。1枚の写真が
   // 複数領域に分割された場合のみエントリを持つ。
   const photoGroupRef = useRef(new Map<string, PhotoGroup>());
+  // task-22: 実機診断データ(直近の写真ジョブ1件分のみ、非永続)。iPhone Safari固有の
+  // マルチレシート誤分割調査用に、ユーザーが問題を感じた写真の検出結果を1タップで
+  // 回収できるようにする。画像データ・OCR認識テキストは持たない(`PhotoDiagnostics`参照)。
+  // 複数写真を続けて取り込んだ場合は最新の1件で上書きする(履歴は保持しない、
+  // Appのstate/永続化スキーマに影響を与えないためrefで持つ)。
+  const lastDiagnosticsRef = useRef<PhotoDiagnostics | null>(null);
   // 印字アニメーションのstagger遅延(ms)をid別に保持する(Codexレビュー v1.2再指摘I5)。
   // 「追加バッチ内のindex」から算出し、ReceiptRowへそのままpropとして渡す。一覧全体の
   // 通し番号から逆算する旧実装は、既存行が10件以上ある状態で1件だけ追加しても
@@ -185,6 +193,17 @@ export default function App() {
           ambiguous: flags.ambiguous,
           nearLimit: flags.nearLimit,
         });
+      },
+      // task-22: 検出パス実行時の実機診断データ。最新の写真ジョブ分だけをrefへ保持する
+      // (App stateには含めない=永続化されず、コンポーネントの再レンダーも起こさない)。
+      // `resolveActiveRow`(onThumbnail/onPreview/onResultと同じガード)でjobIdが今も
+      // 有効な行に紐づくかを検証してから採用する(Codexレビュー指摘: 検証しないと、
+      // 検出中に行を削除・キャンセル・月次リセットした後に遅れて届いた古い写真の
+      // 診断データで「最新」を誤って上書きしてしまう。月次リセット後はrowsRef自体が
+      // 新しい月の行に入れ替わるため、この検証だけで別途明示的なクリアは不要)。
+      onDiagnostics: (jobId, diagnostics) => {
+        if (!resolveActiveRow(jobId)) return;
+        lastDiagnosticsRef.current = diagnostics;
       },
       onThumbnail: (jobId, blob) => {
         const resolved = resolveActiveRow(jobId);
@@ -602,6 +621,9 @@ export default function App() {
                   <button type="button" onClick={() => onDeleteGroup(recovery.photoJobId)}>
                     削除して撮り直す
                   </button>
+                  {/* task-22: この写真の検出パス診断データ(画像・認識テキストは含まない)を
+                      クリップボードへコピーする。実機での誤分割調査用の回収導線。 */}
+                  <DiagnosticsCopyButton getDiagnostics={() => lastDiagnosticsRef.current} />
                 </li>,
               );
             }
@@ -611,7 +633,7 @@ export default function App() {
         <div className="section-divider" aria-hidden="true" />
         <ManualEntryForm people={state.people} onAdd={(row) => dispatch({ type: "addRows", rows: [row] })} />
       </div>
-      <SummaryPanel state={state} onNewMonth={onNewMonth} />
+      <SummaryPanel state={state} onNewMonth={onNewMonth} getDiagnostics={() => lastDiagnosticsRef.current} />
     </main>
   );
 }
