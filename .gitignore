@@ -1,5 +1,6 @@
 .superpowers/
 spike-results/
+.worktrees/
 
 # Real photos with personal information - never commit
 IMG_*.jpeg
