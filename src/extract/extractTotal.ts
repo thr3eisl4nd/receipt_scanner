@@ -19,7 +19,13 @@ export type ExtractResult = {
  */
 type LabelKind = "exact" | "corrupted" | "fuzzy";
 
-const STRONG_LABELS = [
+// task-25追記: `STRONG_LABELS`/`STRONG_LABEL_CORRUPTED_VARIANTS`/
+// `STRONG_LABEL_CORRUPTED_VARIANTS_NO_TORI`/`REJECT_LABELS`は
+// `src/extract/extractTotalFromText.ts`(iPhone Live Text連携のテキスト行モード抽出)からも
+// そのままimportして再利用する。box座標に依存しないキーワード集合そのものは共有すべきで、
+// 別ファイルへ複製すると「合計」の崩れバリアント等の知見(調査で観測済みの実データ由来)が
+// 二重管理になり将来の追記が食い違う恐れがあるため、ここでexportして一次ソースを1箇所に保つ。
+export const STRONG_LABELS = [
   /(?:税込|総)?合計/,
   /お?買上(?:げ)?(?:計|金額)/,
   /お会計/,
@@ -55,7 +61,7 @@ const STRONG_LABELS = [
  * と同じ考え方)。既存4バリアント(含計/合针/合计/台計)は前回タスクで既にレビュー済みの
  * ためアンカー化は本タスクのスコープ外とし、新規追加分のみ対象にした。
  */
-const STRONG_LABEL_CORRUPTED_VARIANTS = [
+export const STRONG_LABEL_CORRUPTED_VARIANTS = [
   /含計/,
   /合针/,
   /合计/,
@@ -95,9 +101,9 @@ const STRONG_LABEL_CORRUPTED_VARIANTS = [
  * 「取 引金額」のように空白で分割された崩れ方(境界ケース)は本パターンでは
  * 引き続き検出できない(スコープ外、安全側に倒れるだけなので実害はない)。
  */
-const STRONG_LABEL_CORRUPTED_VARIANTS_NO_TORI = [/^\s*引金[額额](?=\s*(?:$|[:：]?\s*[¥￥\d]))/];
+export const STRONG_LABEL_CORRUPTED_VARIANTS_NO_TORI = [/^\s*引金[額额](?=\s*(?:$|[:：]?\s*[¥￥\d]))/];
 
-const REJECT_LABELS = [
+export const REJECT_LABELS = [
   /小計/,
   /(?:8|10)\s*%対象/,
   /課税対象/,

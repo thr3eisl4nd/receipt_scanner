@@ -68,6 +68,11 @@ export function findMoneyTokens(text: string): number[] {
       continue;
     }
     if (/^[ \t]?%/.test(normalized.slice(end))) continue;
+    // 直後(空白/タブを1つ挟んでもよい)が個数の助数詞なら金額として扱わない
+    // (Codexレビュー指摘、task-25: 「3点」のような品目の個数表記が、通貨記号なし・
+    // 円表記なしの裸の数字として金額候補に紛れ込んでいた。「合計 3点」が¥3に化ける等、
+    // box座標モード・テキスト行モードいずれの安全性にも関わる)。
+    if (/^[ \t]?(?:点|個|本|枚|人|件|回)/.test(normalized.slice(end))) continue;
     const v = normalizeMoneyToken(m[0].trim());
     if (v !== null) out.push(v);
   }

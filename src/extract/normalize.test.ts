@@ -54,4 +54,13 @@ describe("findMoneyTokens", () => {
   test("%除外は直後の空白を許容する", () => {
     expect(findMoneyTokens("10 %対象 550")).toEqual([550]);
   });
+  test("個数の助数詞(点/個/本/枚/人/件/回)が直後にある裸の数字は金額として拾わない(Codexレビュー指摘、task-25: 「合計 3点」が¥3化けする穴)", () => {
+    expect(findMoneyTokens("合計 3点")).toEqual([]);
+    expect(findMoneyTokens("ねぎ 2個")).toEqual([]);
+    expect(findMoneyTokens("ビール 6本")).toEqual([]);
+    expect(findMoneyTokens("シャツ 1枚")).toEqual([]);
+    expect(findMoneyTokens("大人 2人")).toEqual([]);
+    expect(findMoneyTokens("3件 ¥500")).toEqual([500]); // 助数詞の後にある金額自体は引き続き拾う
+    expect(findMoneyTokens("10 %対象 3 点")).toEqual([]); // 空白を挟んだ助数詞も除外する
+  });
 });
