@@ -1,5 +1,6 @@
 import type { OcrBox, OcrEngine, OcrLine } from "./engine";
-import { PaddleOcrService } from "ppu-paddle-ocr/web";
+import { getDefaultWebExecutionProviders, PaddleOcrService } from "ppu-paddle-ocr/web";
+import type { InferenceSession } from "onnxruntime-web";
 import { env as ortEnv } from "onnxruntime-web";
 import { mapToOcrLines, sanitizeBoxes } from "./mapRecognitionResult";
 
@@ -60,24 +61,37 @@ function resolveOrtNumThreads(): number {
  * 日本語レシートでは実用にならないため、あえて small を選択している
  * (詳細は task-4-report.md 参照)。
  *
- * 実行プロバイダは常にCPU/WASM実行になる(`session.executionProviders` を
- * 明示的に指定していないが、WebGPUが自動選択されることはない)。`ppu-paddle-ocr`の
- * `BasePaddleOcrService`コンストラクタが`this.options.session`を
- * `DEFAULT_SESSION_OPTIONS`(`executionProviders:["cpu"]`を含む)で先に埋めてしまうため、
- * `PaddleOcrService`(web)側の「`session`が未指定/空ならWebGPU自動判定へ委ねる」という
- * 分岐条件(`Object.keys(this.options.session).length===0`)が常にfalseになり、
- * `initialize()`内の`_resolveSessionExecutionProviders()`は「ユーザーが
- * executionProvidersを指定済み」と誤認して`getDefaultWebExecutionProviders()`
- * (WebGPU可否を判定しWebGPU利用可能なら`["webgpu","wasm"]`を返す関数)を一切呼ばない。
- * 結果として`executionProviders:["cpu"]`のまま`InferenceSession.create()`に渡るが、
- * onnxruntime-webは`"cpu"`を`"wasm"`と同じバックエンド実装へ登録している
- * (`registerBackend("cpu", wasmBackend2, 10)`。`registerBackend("wasm", wasmBackend2, 10)`と
- * 実装インスタンスが同一)ため、`"cpu"`指定でも実行される中身は`"wasm"`指定と同一の
- * WebAssemblyバックエンドであり、要は常にWASM実行になる。
- * この既定値マージ順序の問題は`ppu-paddle-ocr`側のバグであり、本ファイル側で
- * `session.executionProviders`を明示指定すれば回避できるが、現状は未対応
+ * 実行プロバイダは既定でWASM単体に固定している(`resolveExecutionProviders()`参照)。
+ * 背景: `ppu-paddle-ocr`(6.2.0)の`BasePaddleOcrService`コンストラクタが
+ * `session.executionProviders`を`["cpu"]`込みの既定値でdeepMerge済みにしてしまうため、
+ * ライブラリ自身のWebGPU自動判定(`_resolveSessionExecutionProviders()`。「ユーザーが
+ * 指定済み」と誤認して`getDefaultWebExecutionProviders()`を呼ばない)が実質常に無効化され、
+ * 何もしなくても常にWASM実行になるバグがある(調査の詳細は`.superpowers/sdd/task-24-report.md`)。
+ *
+ * task-24で本ファイル側から明示的に`session.executionProviders`を渡すバグ回避を実装した上で
+ * 実機検証(デスクトップChrome、Apple Silicon Metal GPU)したところ、検出/認識どちらの
+ * ONNXモデルでもWebGPUでの`InferenceSession.create()`自体が毎回失敗した(ライブラリの
+ * `createSessionWithFallback()`がWASM単体へ自動フォールバックするため実害はないが、
+ * 速度上の利益なく初期化コストだけ増える)。そのため既定はWASM単体のままとし、
+ * `?ocrProvider=webgpu`を付与した場合のみWebGPUを試す(opt-in)。onnxruntime-webや
+ * ブラウザ側のWebGPU実装が改善したら実機再検証のうえ既定を切り替える想定。
  * (実機速度対策はcoi-serviceworker導入によるWASMマルチスレッド化で別途行っている)。
  */
+
+/**
+ * `session.executionProviders`を解決する。既定はWASM単体(現状はWebGPUを試しても
+ * 恩恵がないため、上記docコメント参照)。`?ocrProvider=webgpu`が付与されている場合のみ、
+ * ライブラリの`getDefaultWebExecutionProviders()`(WebGPU利用可能なら`["webgpu","wasm"]`、
+ * `navigator.gpu`が無い/アダプタ取得失敗なら`["wasm"]`を返す)に委ねてWebGPUを試す。
+ * 未知の値・パラメータなしはすべて安全側(WASM単体)に倒す。
+ */
+async function resolveExecutionProviders(): Promise<InferenceSession.SessionOptions["executionProviders"]> {
+  if (new URLSearchParams(location.search).get("ocrProvider") === "webgpu") {
+    return getDefaultWebExecutionProviders();
+  }
+  return ["wasm"];
+}
+
 export function createPpuPaddleEngine(): OcrEngine {
   let service: PaddleOcrService | null = null;
   // initialize()の多重呼び出し(複数fileの並走選択など)を1つの初期化に集約する共有Promise。
@@ -94,12 +108,20 @@ export function createPpuPaddleEngine(): OcrEngine {
       // cross-origin isolated環境ではマルチスレッドWASMを有効化し、非対応環境は
       // 明示的に1(シングルスレッド)にする(`resolveOrtNumThreads()`参照)。
       ortEnv.wasm.numThreads = resolveOrtNumThreads();
+      // executionProvidersを明示指定する(`resolveExecutionProviders()`のdocコメント参照。
+      // これを指定しないとppu-paddle-ocr側のバグで常にWASM実行になる)。
+      const requestedExecutionProviders = await resolveExecutionProviders();
+      // 「要求した」プロバイダであり、実際に使われたプロバイダとは限らない(WebGPUが
+      // 要求されてもセッション生成に失敗すればWASMへ自動フォールバックする。フォールバック
+      // 発生時は`createSessionWithFallback()`側が`console.warn`で別途ログする)。
+      console.info(`[ppuPaddleEngine] requestedExecutionProviders=${JSON.stringify(requestedExecutionProviders)}`);
       const candidate = new PaddleOcrService({
         model: {
           detection: `${MODEL_BASE_URL}PP-OCRv6_small_det.ort`,
           recognition: `${MODEL_BASE_URL}PP-OCRv6_small_rec.ort`,
           charactersDictionary: `${MODEL_BASE_URL}ppocrv6_dict.txt`,
         },
+        session: { executionProviders: requestedExecutionProviders },
       });
       try {
         await candidate.initialize();
