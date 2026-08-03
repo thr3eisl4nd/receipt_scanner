@@ -1618,6 +1618,21 @@ describe("App", () => {
       expect(persisted.rows?.some((r: { amountYen?: number }) => r.amountYen === undefined)).toBeFalsy();
     });
 
+    // task-27セキュリティレビュー指摘(Medium): localStorageはオリジン単位のため、平文APIキーを
+    // 能動的に削除できる導線が必要。
+    it("「APIキーを削除」を押すとlocalStorageからキーが削除され有効フラグもfalse('0')へ戻り、入力欄も空に戻る", () => {
+      render(<App />);
+      enableGemini("my-secret-key");
+      expect(localStorage.getItem("receipt-scanner:gemini:apiKey")).toBe("my-secret-key");
+
+      fireEvent.click(screen.getByRole("button", { name: "APIキーを削除" }));
+
+      expect(localStorage.getItem("receipt-scanner:gemini:apiKey")).toBeNull();
+      expect(localStorage.getItem("receipt-scanner:gemini:enabled")).toBe("0");
+      expect((screen.getByLabelText("Gemini APIキー") as HTMLInputElement).value).toBe("");
+      expect(screen.queryByRole("button", { name: "APIキーを削除" })).toBeNull();
+    });
+
     // Codexレビュー指摘Important#3: キーを消したのに、後日新しいキーを貼り付けた瞬間
     // 再度オンにし直さなくても有効化される、というオプトインの意図に反する挙動を防ぐ。
     it("有効化した後にAPIキーを空へ変更すると有効フラグも自動的にfalseへ戻り、新しいキーを入れても再度手動で有効化するまでオフのまま", () => {

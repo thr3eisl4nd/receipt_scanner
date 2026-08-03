@@ -281,6 +281,18 @@ main {
   color: var(--ink);
   font-weight: 600;
 }
+/* task-27セキュリティレビュー指摘(Medium): 平文保存されたAPIキーを削除する導線。
+   誤操作を誘わないよう、有効化トグルより控えめな小さいテキストボタンにする。 */
+.gemini-settings-forget {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 4px 2px;
+  border: none;
+  background: none;
+  color: var(--ink-faded);
+  font-size: 12px;
+  text-decoration: underline;
+}
 .gemini-settings-enabled {
   display: flex;
   align-items: center;

@@ -18,7 +18,14 @@ import { extractTotalFromText } from "./extract/extractTotalFromText";
 import { reducer, toPersisted, fromPersisted, computeTotals, nextReceiptLabel, type AppState, type RowPatch } from "./state/reducer";
 import { saveState, loadState, currentMonth } from "./state/storage";
 import { GeminiSettingsPanel } from "./components/GeminiSettingsPanel";
-import { loadGeminiSettings, saveGeminiApiKey, saveGeminiEnabled, isGeminiActive, type GeminiSettings } from "./gemini/settings";
+import {
+  loadGeminiSettings,
+  saveGeminiApiKey,
+  saveGeminiEnabled,
+  forgetGeminiSettings,
+  isGeminiActive,
+  type GeminiSettings,
+} from "./gemini/settings";
 import { runGeminiPhotoJob, type GeminiPhotoJobResult } from "./gemini/photoJob";
 import type { Row } from "./types";
 
@@ -385,6 +392,17 @@ export default function App() {
   const onGeminiEnabledChange = (enabled: boolean) => {
     setGeminiSettings((s) => ({ ...s, enabled }));
     saveGeminiEnabled(enabled);
+  };
+
+  // task-27セキュリティレビュー指摘(Medium): APIキーは平文でlocalStorageに残り続けるため
+  // (無効化トグルはキー自体を消さない、既存の意図的な挙動)、利用者が能動的にキーを消去できる
+  // 導線を設ける。画面上のstateは即時クリアし、localStorageの削除も試行する。保存/削除の
+  // 失敗(プライベートブラウジング等)を無視する既存の方針(本ファイル上部の
+  // onGeminiApiKeyChange等と同じ)をここでも踏襲する: 失敗してもエラー表示はせず、
+  // 次回起動時にloadGeminiSettings()が改めてlocalStorageの実際の値を読み直すだけとする。
+  const onGeminiForgetKey = () => {
+    setGeminiSettings({ apiKey: "", enabled: false });
+    forgetGeminiSettings();
   };
 
   /** 6秒後に自動的に消える通知(Codexレビュー方針: 連続フォールバック時に画面を
@@ -795,6 +813,7 @@ export default function App() {
           settings={geminiSettings}
           onApiKeyChange={onGeminiApiKeyChange}
           onEnabledChange={onGeminiEnabledChange}
+          onForgetKey={onGeminiForgetKey}
         />
         <PeopleManager
           people={state.people}

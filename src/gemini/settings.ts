@@ -61,6 +61,18 @@ export function saveGeminiEnabled(enabled: boolean): boolean {
   }
 }
 
+/** task-27セキュリティレビュー指摘(Medium): `localStorage`はオリジン単位(パス単位ではない)
+ *  のため、同じGitHub Pagesアカウント配下の別プロジェクト(同一オリジン)からもこのAPIキーを
+ *  読み取られ得る。バックエンドを持たない静的SPAである以上この構造上の制約自体は解消できない
+ *  ため、キーの保持期間を利用者が能動的に短くできる「削除」導線を設ける。`saveGeminiApiKey("")`
+ *  (キー削除)と`saveGeminiEnabled(false)`(無効化)を一括で行う。両呼び出しのどちらかが
+ *  失敗しても(プライベートブラウジング等)、もう一方は独立して試行する。 */
+export function forgetGeminiSettings(): boolean {
+  const keyRemoved = saveGeminiApiKey("");
+  const disabled = saveGeminiEnabled(false);
+  return keyRemoved && disabled;
+}
+
 /** キー設定済み(空白のみは未設定扱い)かつトグル有効時のみtrue。App.tsxはこれで
  *  「写真投入時にGeminiへ送るか、内蔵OCRのままにするか」を判定する。 */
 export function isGeminiActive(settings: GeminiSettings): boolean {

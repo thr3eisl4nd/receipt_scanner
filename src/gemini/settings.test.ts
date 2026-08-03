@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import {
   API_KEY_STORAGE_KEY,
   ENABLED_STORAGE_KEY,
+  forgetGeminiSettings,
   isGeminiActive,
   loadGeminiSettings,
   saveGeminiApiKey,
@@ -89,5 +90,15 @@ describe("gemini/settings", () => {
   test("ENABLED_STORAGE_KEYもAPI_KEY_STORAGE_KEYも'receipt-scanner:gemini:'名前空間を使う", () => {
     expect(API_KEY_STORAGE_KEY.startsWith("receipt-scanner:gemini:")).toBe(true);
     expect(ENABLED_STORAGE_KEY.startsWith("receipt-scanner:gemini:")).toBe(true);
+  });
+
+  // task-27セキュリティレビュー指摘(Medium): localStorageはオリジン単位のため、平文APIキーを
+  // 能動的に削除できる導線が必要。forgetGeminiSettingsはキー削除・無効化を一括で行う。
+  test("forgetGeminiSettings: 保存済みのAPIキーを削除し、有効フラグもfalseへ戻す", () => {
+    saveGeminiApiKey("AIzaSyTest1234");
+    saveGeminiEnabled(true);
+    expect(forgetGeminiSettings()).toBe(true);
+    expect(localStorage.getItem(API_KEY_STORAGE_KEY)).toBeNull();
+    expect(loadGeminiSettings()).toEqual({ apiKey: "", enabled: false });
   });
 });

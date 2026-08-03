@@ -11,20 +11,20 @@ const settings = (over: Partial<GeminiSettings> = {}): GeminiSettings => ({ apiK
 
 describe("GeminiSettingsPanel", () => {
   it("初期状態では設定パネルは折りたたまれている(歯車ボタンのみ表示)", () => {
-    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
     const toggle = screen.getByRole("button", { name: /Gemini連携の設定/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByLabelText("Gemini APIキー")).toBeNull();
   });
 
   it("歯車ボタンをタップすると設定パネルが開く", () => {
-    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
     expect(screen.getByLabelText("Gemini APIキー")).toBeTruthy();
   });
 
   it("画像がGoogleに送信される旨の明示的な注意書きを表示する", () => {
-    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
     const notice = document.querySelector(".gemini-settings-notice");
     expect(notice?.textContent).toMatch(/Google/);
@@ -33,14 +33,16 @@ describe("GeminiSettingsPanel", () => {
 
   it("APIキー入力を変更するとonApiKeyChangeが呼ばれる", () => {
     const onApiKeyChange = vi.fn();
-    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={onApiKeyChange} onEnabledChange={vi.fn()} />);
+    render(
+      <GeminiSettingsPanel settings={settings()} onApiKeyChange={onApiKeyChange} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
     fireEvent.change(screen.getByLabelText("Gemini APIキー"), { target: { value: "AIzaSyTest" } });
     expect(onApiKeyChange).toHaveBeenCalledWith("AIzaSyTest");
   });
 
   it("APIキーが未設定(空)の間、有効化トグルはdisabledになる", () => {
-    render(<GeminiSettingsPanel settings={settings({ apiKey: "" })} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    render(<GeminiSettingsPanel settings={settings({ apiKey: "" })} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
     const enabledToggle = screen.getByRole("checkbox", { name: /AI読み取り.*(有効|使う)/ }) as HTMLInputElement;
     expect(enabledToggle.disabled).toBe(true);
@@ -53,6 +55,7 @@ describe("GeminiSettingsPanel", () => {
         settings={settings({ apiKey: "AIzaSyTest", enabled: false })}
         onApiKeyChange={vi.fn()}
         onEnabledChange={onEnabledChange}
+        onForgetKey={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
@@ -63,14 +66,14 @@ describe("GeminiSettingsPanel", () => {
   });
 
   it("「キーの発行方法」の折りたたみガイドにAI Studioへのリンクを含む", () => {
-    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
     const link = screen.getByRole("link", { name: /aistudio\.google\.com|AI Studio/i });
     expect(link.getAttribute("href")).toContain("aistudio.google.com");
   });
 
   it("APIキー入力は既定でマスクされ(type=password)、表示切り替えボタンでtextに切り替わる", () => {
-    render(<GeminiSettingsPanel settings={settings({ apiKey: "secret" })} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    render(<GeminiSettingsPanel settings={settings({ apiKey: "secret" })} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
     const input = screen.getByLabelText("Gemini APIキー") as HTMLInputElement;
     expect(input.type).toBe("password");
@@ -81,7 +84,7 @@ describe("GeminiSettingsPanel", () => {
   // Codexレビュー指摘Important#3: パネルを閉じても表示状態がtrueのまま残ると、
   // 再度開いた時にAPIキーが平文表示されたままになる。
   it("キーを表示した状態でパネルを閉じ、再度開くとマスク状態に戻っている", () => {
-    render(<GeminiSettingsPanel settings={settings({ apiKey: "secret" })} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    render(<GeminiSettingsPanel settings={settings({ apiKey: "secret" })} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
     const toggle = screen.getByRole("button", { name: /Gemini連携の設定/ });
     fireEvent.click(toggle); // 開く
     fireEvent.click(screen.getByRole("button", { name: /表示/ }));
@@ -90,5 +93,27 @@ describe("GeminiSettingsPanel", () => {
     fireEvent.click(toggle); // 閉じる
     fireEvent.click(toggle); // 再度開く
     expect((screen.getByLabelText("Gemini APIキー") as HTMLInputElement).type).toBe("password");
+  });
+
+  // task-27セキュリティレビュー指摘(Medium): 平文保存されたAPIキーを能動的に削除できる導線。
+  it("APIキー未設定時は「APIキーを削除」ボタンを表示しない", () => {
+    render(<GeminiSettingsPanel settings={settings()} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} onForgetKey={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
+    expect(screen.queryByRole("button", { name: "APIキーを削除" })).toBeNull();
+  });
+
+  it("APIキー設定済み時は「APIキーを削除」ボタンをクリックするとonForgetKeyが呼ばれる", () => {
+    const onForgetKey = vi.fn();
+    render(
+      <GeminiSettingsPanel
+        settings={settings({ apiKey: "AIzaSyTest" })}
+        onApiKeyChange={vi.fn()}
+        onEnabledChange={vi.fn()}
+        onForgetKey={onForgetKey}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
+    fireEvent.click(screen.getByRole("button", { name: "APIキーを削除" }));
+    expect(onForgetKey).toHaveBeenCalledTimes(1);
   });
 });

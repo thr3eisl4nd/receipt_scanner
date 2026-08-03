@@ -5,6 +5,9 @@ type Props = {
   settings: GeminiSettings;
   onApiKeyChange(apiKey: string): void;
   onEnabledChange(enabled: boolean): void;
+  /** task-27セキュリティレビュー指摘(Medium): 保存済みAPIキーを即座に削除する(無効化トグルは
+   *  キー自体を消さないため、平文キーの保持期間を能動的に短くする専用の導線)。 */
+  onForgetKey(): void;
 };
 
 const AI_STUDIO_KEY_URL = "https://aistudio.google.com/apikey";
@@ -27,7 +30,7 @@ const AI_STUDIO_KEY_URL = "https://aistudio.google.com/apikey";
  * APIキー・有効フラグの永続化はApp.tsx側の責務(`src/gemini/settings.ts`)。この
  * コンポーネントは常に親から渡された値を表示するcontrolledな入力のみを担う。
  */
-export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange }: Props) {
+export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange, onForgetKey }: Props) {
   const [open, setOpen] = useState(false);
   const [keyVisible, setKeyVisible] = useState(false);
   const panelId = useId();
@@ -61,7 +64,7 @@ export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange 
           {/* 安全に関わる明示(オーケストレーター指示+Codexレビュー指摘: 平文保存・
               無料枠のデータ利用ポリシーも合わせて開示する)。折りたたまず常時表示する。 */}
           <p className="gemini-settings-notice">
-            有効にすると、取り込んだレシート写真がGoogleのGemini APIへ送信されます。画像は各自のGoogleアカウントのAPIキーを使って直接送信され、このアプリのサーバーは経由しません。APIキーはこの端末のブラウザに平文で保存されます(共有端末では注意してください)。無料枠を利用する場合、送信内容がGoogleの製品改善に利用されることがあります(有料プランでは利用されません。詳細はGoogleの利用規約を確認してください)。
+            有効にすると、取り込んだレシート写真がGoogleのGemini APIへ送信されます。画像は各自のGoogleアカウントのAPIキーを使って直接送信され、このアプリのサーバーは経由しません。APIキーはこの端末のブラウザに平文で保存されます(共有端末では注意してください)。同じサイト上の別ページ・別アプリからも技術的には読み取られ得るため、他のサービスと共用しない専用のAPIキーを使い、使わなくなったら下の「APIキーを削除」で消してください。無料枠を利用する場合、送信内容がGoogleの製品改善に利用されることがあります(有料プランでは利用されません。詳細はGoogleの利用規約を確認してください)。
           </p>
           <label className="gemini-settings-field">
             <span>Gemini APIキー</span>
@@ -80,6 +83,14 @@ export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange 
               </button>
             </span>
           </label>
+          {/* task-27セキュリティレビュー指摘(Medium): 平文保存されたAPIキーの保持期間を
+              利用者が能動的に短くできる導線。無効化トグル(下)はキー自体を消さないため、
+              「もう使わない」場合の明確な削除操作を別に用意する。 */}
+          {hasKey && (
+            <button type="button" className="gemini-settings-forget" onClick={onForgetKey}>
+              APIキーを削除
+            </button>
+          )}
           {/* aria-labelで上書きせず、ネイティブの<label>包含関係(=見えるテキスト
               「AI読み取り(Gemini)を使う」そのもの)からアクセシブルネームを構成する
               (WCAG 2.5.3 Label in Name、既存コンポーネント群と同じ方針)。 */}
@@ -99,7 +110,7 @@ export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange 
               <a href={AI_STUDIO_KEY_URL} target="_blank" rel="noreferrer">
                 Google AI Studio({AI_STUDIO_KEY_URL})
               </a>
-              にアクセスし、Googleアカウントでログインして「APIキーを作成」を選ぶと発行できます(APIキーの発行自体は無料。利用条件・料金は各自のGoogleアカウントのプランに従います)。発行したキーをそのまま上の欄に貼り付けてください。
+              にアクセスし、Googleアカウントでログインして「APIキーを作成」を選ぶと発行できます(APIキーの発行自体は無料。利用条件・料金は各自のGoogleアカウントのプランに従います)。発行したキーをそのまま上の欄に貼り付けてください。AI Studio側でこのキーに利用量の上限を設定しておくと、万一キーが漏れた場合の被害を抑えられます。
             </p>
           </details>
         </div>
