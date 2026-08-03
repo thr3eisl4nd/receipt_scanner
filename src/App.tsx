@@ -14,6 +14,7 @@ import {
   type PhotoDiagnostics,
 } from "./ocr/queue";
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
+import { extractTotalFromText } from "./extract/extractTotalFromText";
 import { reducer, toPersisted, fromPersisted, computeTotals, nextReceiptLabel, type AppState, type RowPatch } from "./state/reducer";
 import { saveState, loadState, currentMonth } from "./state/storage";
 import { GeminiSettingsPanel } from "./components/GeminiSettingsPanel";
@@ -536,6 +537,30 @@ export default function App() {
     for (const job of geminiJobs) chainGeminiJob(job.id, job.file);
   };
 
+  // 「テキストを貼り付けて追加」(task-25、設計ドキュメント§18)。iPhone Live Text由来の
+  // テキストは、写真を経由するOCRキューと違って抽出が同期的(box座標もFileも不要な
+  // 純粋関数`extractTotalFromText`)なので、onFilesのような「processing:trueの
+  // プレースホルダ行→非同期結果反映」の2段階を経ず、その場で最終状態の行を1件追加する。
+  // File自体を保持しないため`retryFilesRef`には登録しない(サムネイルもない
+  // =`row.source`は既存の"ocr"のまま、貼り付け由来の識別はどこにも必要ないため
+  // 追加のフィールドは持たせない)。抽出に失敗した(status:"failed")場合も、
+  // 既存の「金額を入力」導線(ReceiptRowの金額ボタンは常に編集可能)がそのまま
+  // 手入力の受け皿になる。
+  const onAddFromText = (payerId: string, text: string) => {
+    const result = extractTotalFromText(text);
+    const label = nextReceiptLabel(state.rows)(1);
+    const row: Row = {
+      id: crypto.randomUUID(),
+      payerId,
+      amountYen: result.amountYen,
+      label,
+      status: result.status,
+      source: "ocr",
+      candidates: result.candidates,
+    };
+    dispatch({ type: "addRows", rows: [row] });
+  };
+
   const onRemove = (id: string) => {
     const row = state.rows.find((r) => r.id === id);
     if (row?.thumbnailUrl) URL.revokeObjectURL(row.thumbnailUrl);
@@ -745,7 +770,7 @@ export default function App() {
           onRename={(id, name) => dispatch({ type: "renamePerson", id, name })}
           onRemove={(id) => dispatch({ type: "removePerson", id })}
         />
-        <AddReceiptButtons people={state.people} onFiles={onFiles} />
+        <AddReceiptButtons people={state.people} onFiles={onFiles} onAddFromText={onAddFromText} />
         {/* 撮り方ヒント(調査結論: `.superpowers/sdd/ocr-investigation.md`。占有率(レシートが
             画面に占める割合=実効解像度)が失敗の最も支配的な単独要因、傾きは副次要因。
             取り込みボタン群の直下に常時表示する装飾的な案内文で、機能には影響しない。 */}

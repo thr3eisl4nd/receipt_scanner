@@ -1687,4 +1687,92 @@ describe("App", () => {
       expect(enqueueMock).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * 「テキストを貼り付けて追加」(task-25、iPhone Live Text連携、設計ドキュメント§18)。
+   * ファイル取り込み(onFiles)と異なり抽出が同期的なため、OCRキュー(enqueueMock)を
+   * 経由せずその場で最終状態の行が1件追加される。
+   */
+  describe("テキストを貼り付けて追加(task-25)", () => {
+    it("明確な合計ラベル+金額のテキストを貼り付けると、auto-highの行が即座に1件追加され、集計へ反映される", () => {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole("button", { name: "テキストを貼り付けて追加" }));
+      fireEvent.change(screen.getByLabelText(/テキストを貼り付け/), {
+        target: { value: "スーパーABC\nねぎ ¥98\n小計 ¥1,234\n合計 ¥1,332\nお預り ¥2,000" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "貼り付けたテキストから追加" }));
+
+      // OCRキューは一切呼ばれない(同期抽出のため)
+      expect(enqueueMock).not.toHaveBeenCalled();
+
+      const rows = container.querySelectorAll(".receipt-row");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].querySelector(".thumb-button")).toBeNull(); // サムネイルなし(source:"ocr"のまま)
+      const amountButton = screen.getByRole("button", { name: amountEditLabel("レシート 1") });
+      expect(amountButton.textContent).toBe("1,332円");
+      expect(within(rows[0] as HTMLElement).getByText("[自動]")).toBeTruthy();
+
+      // 集計へ反映される(スマホ既定は折りたたみのため展開してから確認)
+      expandSummary();
+      expect(screen.getByText("1,332円", { selector: ".summary-amount" })).toBeTruthy();
+    });
+
+    it("曖昧なテキスト(2つの異なる合計ラベル)はneeds-reviewの行になり、候補ボタンから選べる", () => {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole("button", { name: "テキストを貼り付けて追加" }));
+      fireEvent.change(screen.getByLabelText(/テキストを貼り付け/), {
+        target: { value: "お会計 ¥6,980\n合計 ¥7,000" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "貼り付けたテキストから追加" }));
+
+      const row = container.querySelector(".receipt-row") as HTMLElement;
+      expect(within(row).getByText("要確認")).toBeTruthy();
+      const candidateButton = within(row).getByRole("button", { name: "レシート 1の候補 7,000円を選択" });
+      fireEvent.click(candidateButton);
+
+      expect(screen.getByRole("button", { name: amountEditLabel("レシート 1") }).textContent).toBe("7,000円");
+      expect(within(row).getByText("確認済")).toBeTruthy();
+    });
+
+    it("合計ラベルが見つからないテキストはfailedの行になり、既存の金額手入力導線で確定できる", () => {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole("button", { name: "テキストを貼り付けて追加" }));
+      fireEvent.change(screen.getByLabelText(/テキストを貼り付け/), {
+        target: { value: "ねぎ ¥98\nたまご ¥298" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "貼り付けたテキストから追加" }));
+
+      const row = container.querySelector(".receipt-row") as HTMLElement;
+      expect(within(row).getByText("読取失敗")).toBeTruthy();
+      // Fileを保持していない(貼り付け由来)ため再試行ボタンは出ない
+      expect(within(row).queryByRole("button", { name: "レシート 1を再試行" })).toBeNull();
+
+      const amountButton = screen.getByRole("button", { name: amountEditLabel("レシート 1") });
+      expect(amountButton.textContent).toBe("金額を入力");
+      fireEvent.click(amountButton);
+      fireEvent.change(screen.getByLabelText("金額(円)"), { target: { value: "500" } });
+      fireEvent.click(screen.getByRole("button", { name: confirmLabel("レシート 1") }));
+
+      expect(screen.getByRole("button", { name: amountEditLabel("レシート 1") }).textContent).toBe("500円");
+    });
+
+    it("支払者セグメントで選択中の人に紐づけて行が追加される(2人構成)", () => {
+      seedTwoPeople();
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole("button", { name: "妻" }));
+      fireEvent.click(screen.getByRole("button", { name: "テキストを貼り付けて追加" }));
+      fireEvent.change(screen.getByLabelText(/テキストを貼り付け/), {
+        target: { value: "合計 ¥500" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "貼り付けたテキストから追加" }));
+
+      const row = container.querySelector(".receipt-row") as HTMLElement;
+      expect(within(row).getByText("妻")).toBeTruthy();
+      expect(within(row).getByText("→夫へ")).toBeTruthy();
+    });
+  });
 });
