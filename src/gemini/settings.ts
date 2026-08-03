@@ -31,7 +31,12 @@ export function loadGeminiSettings(): GeminiSettings {
     enabled = false;
   }
 
-  return { apiKey, enabled };
+  // 不変条件の防御(Codexレビュー指摘Important#3): APIキーが空(未設定)のまま
+  // enabled:trueが保存されている状態を作らせない。呼び出し側(App.tsx)は
+  // APIキー変更時に空になったら`enabled`もfalseへ戻すが、直接localStorageを
+  // 編集された場合や過去バージョンの保存データとの互換のため、読み込み側でも
+  // 同じ不変条件を強制する。
+  return { apiKey, enabled: apiKey.trim() !== "" && enabled };
 }
 
 /** APIキーの保存。空文字は「未設定に戻す」として扱い、キー自体を削除する

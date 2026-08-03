@@ -1,3 +1,5 @@
+import { MAX_YEN } from "../extract/normalize";
+
 /**
  * Gemini API(REST `generateContent`)クライアント(task-26、設計ドキュメント§19)。
  *
@@ -22,6 +24,18 @@ export const GEMINI_MODEL = "gemini-3.6-flash";
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
+/** リクエストタイムアウト(Codexレビュー指摘: `fetch`にタイムアウトが無いと、
+ *  ネットワーク層がPromiseを未解決のまま保持した場合に行が永久に`processing:true`の
+ *  まま固まり、Gemini呼び出しを直列化するpromiseレーン(App.tsxの`geminiLaneRef`)も
+ *  以後のジョブへ進めなくなる)。`AbortController`で確実に一定時間後に失敗させる。 */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** 内蔵OCR(1写真あたりの領域数上限、`src/ocr/regionDetection.ts`の
+ *  `DEFAULT_THRESHOLDS.maxRegions`)と同じ上限を採用する(Codexレビュー指摘:
+ *  Geminiが極端な件数を返した場合の異常値を弾く)。 */
+const MAX_RECEIPTS_PER_PHOTO = 8;
+
+
 /**
  * 合計金額抽出プロンプト(オーケストレーター指示の文言をベースに、プロンプト
  * インジェクション対策の1文を追加している)。
@@ -29,9 +43,13 @@ const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models
  * 安全設計の前提: このプロンプトへ従わせることに失敗した(=画像内の偽装テキストに
  * 惑わされて誤った金額を返した)としても、結果は必ず`needs-review`としてのみ
  * 扱われ(呼び出し側App.tsx)、自動確定(auto-high/confirmed)には一切ならない。
- * ユーザーが金額を確認・編集して初めて確定するため、悪意ある画像による実害は
- * 「誤ったOCR結果」と同程度に留まる(ocr-investigation.md記載の既存OCR誤読と同じ
- * 安全網で吸収される)。
+ * ユーザーが金額を確認・編集して初めて確定するまでは既存OCRの誤読と同じ「要確認」
+ * バッジ付きの一時的な値である(Codexレビュー指摘: 「実害はOCR誤読と同程度」と
+ * 言い切るのはやや楽観的 — needs-review値は集計・差額計算へ即座に反映され、
+ * 「結果をコピー」も未確認件数の確認ダイアログを経れば通せてしまう。これは
+ * needs-review全般に既に存在する既存の挙動であり本タスクの対処範囲外だが、
+ * Gemini固有の追加緩和として`parseGeminiResponseBody`に1枚あたりの件数上限・
+ * 金額の妥当な上限を設けている)。
  */
 export const GEMINI_PROMPT =
   "あなたはレシート画像から合計金額だけを抽出するツールです。" +
@@ -66,20 +84,26 @@ export function buildGeminiRequestBody(base64Jpeg: string): unknown {
   };
 }
 
-/** 円整数として妥当か(0以上のsafe integer)。`src/state/reducer.ts`のisYenAmountより
- *  厳格(負数を拒否): レシート合計が負であることは通常ありえず、誤読・改ざんの疑いが
- *  強いため、パース段階で弾いて安全側(needs-reviewではなく内蔵OCRへのフォールバック)
- *  に倒す。 */
+/** 円整数として妥当か(0以上・`MAX_YEN`以下のsafe integer)。`src/state/reducer.ts`の
+ *  isYenAmountより厳格(負数・上限超過を拒否): レシート合計が負や1,000万円超であることは
+ *  通常ありえず、誤読・プロンプトインジェクションによる異常値の疑いが強いため、
+ *  パース段階で弾いて安全側(needs-reviewではなく内蔵OCRへのフォールバック)に倒す。
+ *  上限は既存OCR経路の金額トークン抽出(`src/extract/normalize.ts`)と同じ`MAX_YEN`を
+ *  再利用する(二重管理を避ける)。 */
 function isValidTotal(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_YEN;
 }
 
 /**
  * `generateContent`レスポンスbodyから合計金額の配列を取り出す純粋関数(テスト容易化)。
- * `candidates[0].content.parts[0].text`がJSON配列文字列である前提で解釈し、各要素の
- * `total`が妥当な値の場合のみ採用する(無効な要素は個別に無視し、1件でも有効なら
- * 採用する)。1件も有効な値が無い場合(空配列・全滅・パース不能・経路欠落)はnullを返し、
- * 呼び出し側で内蔵OCRへのフォールバック対象にする。
+ * `candidates[0].content.parts[0].text`がJSON配列文字列である前提で解釈する。
+ *
+ * fail-closed設計(Codexレビュー指摘Medium#5): 要素ごとに無効な値だけを無視して
+ * 残りを採用すると、「実際は2枚写っているのに1枚分の要素が壊れていた」場合に
+ * 気づかれないまま1行だけが追加されてしまう(レシートの黙った欠落)。配列内の
+ * 1件でも無効な要素があれば、レスポンス全体を無効(null)として内蔵OCRへ
+ * フォールバックする。1枚の写真あたりの件数(`MAX_RECEIPTS_PER_PHOTO`、内蔵OCRの
+ * 領域数上限と同じ)を超える場合も同様に無効とする(異常応答の安全側フォールバック)。
  */
 export function parseGeminiResponseBody(body: unknown): number[] | null {
   try {
@@ -88,13 +112,15 @@ export function parseGeminiResponseBody(body: unknown): number[] | null {
     if (typeof text !== "string") return null;
 
     const parsed: unknown = JSON.parse(text);
-    if (!Array.isArray(parsed)) return null;
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > MAX_RECEIPTS_PER_PHOTO) return null;
 
-    const totals = parsed
-      .map((item) => (item !== null && typeof item === "object" ? (item as Record<string, unknown>).total : undefined))
-      .filter(isValidTotal);
-
-    return totals.length > 0 ? totals : null;
+    const totals: number[] = [];
+    for (const item of parsed) {
+      const total = item !== null && typeof item === "object" ? (item as Record<string, unknown>).total : undefined;
+      if (!isValidTotal(total)) return null; // fail-closed: 1件でも無効なら配列全体を無効にする
+      totals.push(total);
+    }
+    return totals;
   } catch {
     return null;
   }
@@ -124,15 +150,24 @@ export async function extractTotalsWithGemini(
   base64Jpeg: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<GeminiExtractResult> {
+  // タイムアウト(Codexレビュー指摘Important#1): `AbortController`で一定時間後に
+  // 確実にfetchを中断する。中断による例外も他のネットワーク例外と同様`network`扱いに
+  // する(呼び出し側は原因の細分を必要としない。いずれも同じフォールバック経路)。
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   let response: Response;
   try {
     response = await fetchImpl(`${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       body: JSON.stringify(buildGeminiRequestBody(base64Jpeg)),
+      signal: controller.signal,
     });
   } catch {
     return { ok: false, reason: "network" };
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (response.status === 429) return { ok: false, reason: "rate-limit" };

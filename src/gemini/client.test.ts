@@ -53,9 +53,34 @@ describe("gemini/client: parseGeminiResponseBody", () => {
     expect(parseGeminiResponseBody(body)).toEqual([500, 1980, 300]);
   });
 
-  test("負の値・小数・非数は要素ごとに除外する(有効な値が1件でも残れば採用)", () => {
-    const body = bodyWithText(JSON.stringify([{ total: 1000 }, { total: -50 }, { total: 12.5 }, { total: "1000" }]));
-    expect(parseGeminiResponseBody(body)).toEqual([1000]);
+  // fail-closed設計(Codexレビュー指摘Medium#5): 要素ごとの無視ではなく、1件でも
+  // 無効な要素があれば配列全体を無効(null)にする。「実際は2枚写っているのに
+  // 1枚分の要素が壊れていた」場合に気づかれないまま1行だけ追加される
+  // (レシートの黙った欠落)事故を防ぐため。
+  test("1件でも負の値・小数・非数を含む場合、配列全体を無効(null)にする(fail-closed、レシートの黙った欠落を防ぐ)", () => {
+    const body = bodyWithText(JSON.stringify([{ total: 1000 }, { total: -50 }]));
+    expect(parseGeminiResponseBody(body)).toBeNull();
+
+    const bodyDecimal = bodyWithText(JSON.stringify([{ total: 1000 }, { total: 12.5 }]));
+    expect(parseGeminiResponseBody(bodyDecimal)).toBeNull();
+
+    const bodyNonNumeric = bodyWithText(JSON.stringify([{ total: 1000 }, { total: "1000" }]));
+    expect(parseGeminiResponseBody(bodyNonNumeric)).toBeNull();
+  });
+
+  test("MAX_YEN(1,000万円)超過の値はnull(異常値・プロンプトインジェクション対策の上限)", () => {
+    const body = bodyWithText(JSON.stringify([{ total: 10_000_001 }]));
+    expect(parseGeminiResponseBody(body)).toBeNull();
+    const okBody = bodyWithText(JSON.stringify([{ total: 10_000_000 }]));
+    expect(parseGeminiResponseBody(okBody)).toEqual([10_000_000]);
+  });
+
+  test("1枚あたりの件数が上限(8件)を超える場合はnull(異常応答の安全側フォールバック)", () => {
+    const nineTotals = Array.from({ length: 9 }, (_, i) => ({ total: i + 1 }));
+    expect(parseGeminiResponseBody(bodyWithText(JSON.stringify(nineTotals)))).toBeNull();
+
+    const eightTotals = Array.from({ length: 8 }, (_, i) => ({ total: i + 1 }));
+    expect(parseGeminiResponseBody(bodyWithText(JSON.stringify(eightTotals)))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   test("空配列はnull(呼び出し側でフォールバック対象にする)", () => {
@@ -126,5 +151,32 @@ describe("gemini/client: extractTotalsWithGemini", () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, bodyWithText("[]")));
     const result = await extractTotalsWithGemini("test-key", "BASE64", fetchImpl);
     expect(result).toEqual({ ok: false, reason: "parse-error" });
+  });
+
+  // Codexレビュー指摘Important#1: fetchがタイムアウトなく無期限に未解決のままだと、
+  // 行が永久にprocessing:trueで固まり、Gemini呼び出しを直列化するpromiseレーンも
+  // 以後のジョブへ進めなくなる。AbortControllerで一定時間後に確実に失敗させる。
+  test("fetchが応答せず放置される場合、一定時間後にタイムアウトしてnetwork失敗になる(行が永久に固まらない)", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      });
+
+      const resultPromise = extractTotalsWithGemini("test-key", "BASE64", fetchImpl as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(20_000);
+      const result = await resultPromise;
+
+      expect(result).toEqual({ ok: false, reason: "network" });
+      // fetchへ渡したAbortSignalが実際にabortされていること
+      const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect((init.signal as AbortSignal).aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

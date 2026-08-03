@@ -367,9 +367,20 @@ export default function App() {
   // task-26(Gemini連携)。APIキー・有効フラグの変更をlocalStorageへ即時反映する。
   // 保存失敗(プライベートブラウジング等)は無視する(既存機能に影響しない設定値のため、
   // state.saveFailedのような専用UIは設けない。次回起動時に未設定へ戻るだけ)。
-  const onGeminiApiKeyChange = (apiKey: string) => {
-    setGeminiSettings((s) => ({ ...s, apiKey }));
+  //
+  // 前後の空白はここで確定的にtrimする(Codexレビュー方針: クリップボードからの貼り付けで
+  // 末尾に改行・空白が混入すると`x-goog-api-key`ヘッダにそのまま乗り認証エラーになる。
+  // APIキーに意味のある空白は含まれないため、保存前にtrimして常に正規化しておく)。
+  //
+  // 不変条件(Codexレビュー指摘Important#3): APIキーが空になったら`enabled`も必ずfalseへ
+  // 戻す。戻さないと「キーを削除した(=オプトアウトの意図)のに、後日新しいキーを
+  // 貼り付けた瞬間、再度オンにし直さなくてもGeminiが有効化される」という、
+  // オプトインの意図に反する挙動になる。
+  const onGeminiApiKeyChange = (raw: string) => {
+    const apiKey = raw.trim();
+    setGeminiSettings((s) => ({ apiKey, enabled: apiKey !== "" && s.enabled }));
     saveGeminiApiKey(apiKey);
+    if (apiKey === "") saveGeminiEnabled(false);
   };
   const onGeminiEnabledChange = (enabled: boolean) => {
     setGeminiSettings((s) => ({ ...s, enabled }));
@@ -439,6 +450,10 @@ export default function App() {
     if (!pendingRow) return; // 待機中に削除・手修正・キャンセルされた
 
     if (result.kind === "load-error") {
+      // 再試行不能なfailureKind(unsupported-format/image-too-large/image-decodeは
+      // canRetryFailureKindでボタン自体を出さない)なので、大きな元Fileを行削除まで
+      // 保持し続ける意味が無い(Codexレビュー指摘Medium#6)。
+      retryFilesRef.current.delete(id);
       dispatch({
         type: "applyOcrResult",
         id,
@@ -456,22 +471,40 @@ export default function App() {
     // 成功: 1レシート=1行としてプレースホルダをN行へ展開する。Object URLは
     // 行ごとに独立して発行する(同じURL文字列を複数行で共有すると、1行だけ削除された
     // 際に他行の表示中URLまでrevokeしてしまう事故になるため)。
+    //
+    // 生成したURLは`createdUrls`へ追跡し、この後(2行目以降のcreateObjectURL・
+    // dispatch自体)で例外が起きた場合は全てrevokeしてから再throwする(Codexレビュー
+    // 指摘Medium#6: 追跡しないと、途中で例外になった場合に先に作ったURLがrevokeされず
+    // リークし、かつ行がprocessing:trueのまま固まる)。dispatch成功後は所有権がRow側へ
+    // 移るため追跡をクリアする(以後はonRemove/アンマウント時クリーンアップが管理する)。
     retryFilesRef.current.delete(id);
-    const newRowIds = result.totals.map(() => crypto.randomUUID());
-    dispatch({
-      type: "replacePendingRow",
-      placeholderId: id,
-      newRows: newRowIds.map((newId, i) => ({
-        id: newId,
-        payerId: pendingRow.payerId,
-        amountYen: result.totals[i],
-        status: "needs-review" as const,
-        candidates: [result.totals[i]],
-        processing: false,
-        thumbnailUrl: thumbnailBlob ? URL.createObjectURL(thumbnailBlob) : undefined,
-        previewUrl: previewBlob ? URL.createObjectURL(previewBlob) : undefined,
-      })),
-    });
+    const createdUrls: string[] = [];
+    const makeUrl = (blob: Blob | undefined): string | undefined => {
+      if (!blob) return undefined;
+      const url = URL.createObjectURL(blob);
+      createdUrls.push(url);
+      return url;
+    };
+    try {
+      const newRowIds = result.totals.map(() => crypto.randomUUID());
+      dispatch({
+        type: "replacePendingRow",
+        placeholderId: id,
+        newRows: newRowIds.map((newId, i) => ({
+          id: newId,
+          payerId: pendingRow.payerId,
+          amountYen: result.totals[i],
+          status: "needs-review" as const,
+          candidates: [result.totals[i]],
+          processing: false,
+          thumbnailUrl: makeUrl(thumbnailBlob),
+          previewUrl: makeUrl(previewBlob),
+        })),
+      });
+      createdUrls.length = 0; // 所有権をRow側へ移した
+    } finally {
+      for (const url of createdUrls) URL.revokeObjectURL(url);
+    }
   };
 
   /** Gemini呼び出しを1件ずつ直列実行するための単純なpromiseチェーン(`src/ocr/queue.ts`の

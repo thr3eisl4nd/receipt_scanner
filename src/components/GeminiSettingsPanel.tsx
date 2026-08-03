@@ -41,7 +41,15 @@ export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange 
         className="gemini-settings-toggle"
         aria-expanded={open}
         aria-controls={panelId}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() =>
+          setOpen((v) => {
+            const next = !v;
+            // パネルを閉じる際はキー表示状態もリセットする(Codexレビュー指摘Important#3:
+            // 表示状態のまま閉じると、再度開いた時にAPIキーが平文表示されたままになる)。
+            if (!next) setKeyVisible(false);
+            return next;
+          })
+        }
       >
         {/* 歯車は装飾のみ(aria-hidden)。アクセシブルネームは常に「Gemini連携の設定」の
             テキストで構成する(WCAG 2.5.3 Label in Name、既存コンポーネント群と同じ方針)。 */}
@@ -50,9 +58,10 @@ export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange 
       {open && (
         <div id={panelId} className="gemini-settings-panel">
           <h2 className="gemini-settings-heading">AI読み取り(Gemini)</h2>
-          {/* 安全に関わる明示(オーケストレーター指示)。折りたたまず常時表示する。 */}
+          {/* 安全に関わる明示(オーケストレーター指示+Codexレビュー指摘: 平文保存・
+              無料枠のデータ利用ポリシーも合わせて開示する)。折りたたまず常時表示する。 */}
           <p className="gemini-settings-notice">
-            有効にすると、取り込んだレシート写真がGoogleのGemini APIへ送信されます。画像は各自のGoogleアカウントのAPIキーを使って直接送信され、このアプリのサーバーは経由しません。
+            有効にすると、取り込んだレシート写真がGoogleのGemini APIへ送信されます。画像は各自のGoogleアカウントのAPIキーを使って直接送信され、このアプリのサーバーは経由しません。APIキーはこの端末のブラウザに平文で保存されます(共有端末では注意してください)。無料枠を利用する場合、送信内容がGoogleの製品改善に利用されることがあります(有料プランでは利用されません。詳細はGoogleの利用規約を確認してください)。
           </p>
           <label className="gemini-settings-field">
             <span>Gemini APIキー</span>
@@ -71,13 +80,15 @@ export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange 
               </button>
             </span>
           </label>
+          {/* aria-labelで上書きせず、ネイティブの<label>包含関係(=見えるテキスト
+              「AI読み取り(Gemini)を使う」そのもの)からアクセシブルネームを構成する
+              (WCAG 2.5.3 Label in Name、既存コンポーネント群と同じ方針)。 */}
           <label className="gemini-settings-enabled">
             <input
               type="checkbox"
               checked={settings.enabled}
               disabled={!hasKey}
               onChange={(e) => onEnabledChange(e.target.checked)}
-              aria-label="AI読み取り(Gemini)を有効にする"
             />
             AI読み取り(Gemini)を使う
           </label>
@@ -88,7 +99,7 @@ export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange 
               <a href={AI_STUDIO_KEY_URL} target="_blank" rel="noreferrer">
                 Google AI Studio({AI_STUDIO_KEY_URL})
               </a>
-              にアクセスし、Googleアカウントでログインして「APIキーを作成」を選ぶと発行できます(無料)。発行したキーをそのまま上の欄に貼り付けてください。
+              にアクセスし、Googleアカウントでログインして「APIキーを作成」を選ぶと発行できます(APIキーの発行自体は無料。利用条件・料金は各自のGoogleアカウントのプランに従います)。発行したキーをそのまま上の欄に貼り付けてください。
             </p>
           </details>
         </div>

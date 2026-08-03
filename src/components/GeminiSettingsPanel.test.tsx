@@ -77,4 +77,18 @@ describe("GeminiSettingsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /表示/ }));
     expect(input.type).toBe("text");
   });
+
+  // Codexレビュー指摘Important#3: パネルを閉じても表示状態がtrueのまま残ると、
+  // 再度開いた時にAPIキーが平文表示されたままになる。
+  it("キーを表示した状態でパネルを閉じ、再度開くとマスク状態に戻っている", () => {
+    render(<GeminiSettingsPanel settings={settings({ apiKey: "secret" })} onApiKeyChange={vi.fn()} onEnabledChange={vi.fn()} />);
+    const toggle = screen.getByRole("button", { name: /Gemini連携の設定/ });
+    fireEvent.click(toggle); // 開く
+    fireEvent.click(screen.getByRole("button", { name: /表示/ }));
+    expect((screen.getByLabelText("Gemini APIキー") as HTMLInputElement).type).toBe("text");
+
+    fireEvent.click(toggle); // 閉じる
+    fireEvent.click(toggle); // 再度開く
+    expect((screen.getByLabelText("Gemini APIキー") as HTMLInputElement).type).toBe("password");
+  });
 });

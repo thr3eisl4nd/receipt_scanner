@@ -207,6 +207,124 @@ main {
 }
 
 /* ---------------------------------------------------------------------
+   「AI読み取り(Gemini)」設定(task-26、設計ドキュメント§19)。オプトイン機能の
+   重みに合わせ、控えめな歯車トグル(下線付きテキストボタン、.paste-text-toggleと
+   同格)の奥に折りたたむ。既定は非表示。
+   --------------------------------------------------------------------- */
+.gemini-settings {
+  margin: 0 0 18px;
+}
+.gemini-settings-toggle {
+  min-height: 44px;
+  padding: 6px 2px;
+  border: none;
+  background: transparent;
+  color: var(--ink-faded);
+  font-size: 13px;
+  font-weight: 600;
+}
+.gemini-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ink) 3%, var(--paper));
+}
+.gemini-settings-heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+/* 「画像がGoogleに送信される」旨の明示(オーケストレーター指示)。安全に関わる情報
+   なので折りたたまず、注意喚起色(--stamp-text)で常時表示する。 */
+.gemini-settings-notice {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--stamp-text);
+}
+.gemini-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-faded);
+}
+.gemini-settings-key-row {
+  display: flex;
+  gap: 6px;
+}
+.gemini-settings-key-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* 16px以上でiOSのフォーカス時自動ズームを防ぐ(§17.11と同じ方針)。 */
+  font-size: 16px;
+  padding: 8px 10px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-mono);
+}
+.gemini-settings-key-row button {
+  min-height: 44px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+}
+.gemini-settings-enabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.gemini-settings-enabled input {
+  width: 20px;
+  height: 20px;
+}
+.gemini-settings-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-faded);
+}
+.gemini-settings-guide {
+  font-size: 12px;
+  color: var(--ink-faded);
+}
+.gemini-settings-guide summary {
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.gemini-settings-guide p {
+  margin: 4px 0 0;
+  line-height: 1.6;
+}
+.gemini-settings-guide a { color: var(--ink); }
+
+/* Gemini呼び出し失敗→内蔵OCRへの自動フォールバック通知(task-26)。既存の`.error`
+   (--stamp-text)をそのまま流用し、専用の色は追加しない。 */
+.gemini-fallback-notice {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------
    人の管理(設計ドキュメント§17.3)。蛍光マーカーは廃止し、控えめな色ドット+
    淡いソフトチップ(低彩度背景)にする。
    --------------------------------------------------------------------- */

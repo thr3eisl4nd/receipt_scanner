@@ -37,11 +37,20 @@ describe("gemini/settings", () => {
     expect(loadGeminiSettings().apiKey).toBe("");
   });
 
-  test("enabledはtrue/falseどちらも保存・復元できる", () => {
+  test("enabledはtrue/falseどちらも保存・復元できる(APIキー設定済みの場合)", () => {
+    saveGeminiApiKey("some-key");
     saveGeminiEnabled(true);
     expect(loadGeminiSettings().enabled).toBe(true);
     saveGeminiEnabled(false);
     expect(loadGeminiSettings().enabled).toBe(false);
+  });
+
+  // Codexレビュー指摘Important#3: APIキーが空のままenabled:trueが保存されている
+  // (直接localStorageを編集された等の)状態でも、読み込み側で不変条件を強制する。
+  test("APIキーが空の状態でenabled:trueが保存されていても、loadGeminiSettingsはenabled:falseに矯正する", () => {
+    saveGeminiEnabled(true);
+    expect(localStorage.getItem(ENABLED_STORAGE_KEY)).toBe("1"); // 保存自体はそのまま行われる
+    expect(loadGeminiSettings()).toEqual({ apiKey: "", enabled: false });
   });
 
   test("localStorageアクセス自体が例外を投げる場合はsaveがfalseを返し、loadは空/falseにフォールバックする", () => {

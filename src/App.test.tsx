@@ -1618,6 +1618,27 @@ describe("App", () => {
       expect(persisted.rows?.some((r: { amountYen?: number }) => r.amountYen === undefined)).toBeFalsy();
     });
 
+    // Codexレビュー指摘Important#3: キーを消したのに、後日新しいキーを貼り付けた瞬間
+    // 再度オンにし直さなくても有効化される、というオプトインの意図に反する挙動を防ぐ。
+    it("有効化した後にAPIキーを空へ変更すると有効フラグも自動的にfalseへ戻り、新しいキーを入れても再度手動で有効化するまでオフのまま", () => {
+      const { container } = render(<App />);
+      enableGemini("my-secret-key");
+      expect(localStorage.getItem("receipt-scanner:gemini:enabled")).toBe("1");
+
+      fireEvent.change(screen.getByLabelText("Gemini APIキー"), { target: { value: "" } });
+      expect(localStorage.getItem("receipt-scanner:gemini:enabled")).toBe("0");
+      const enabledToggle = screen.getByRole("checkbox", { name: /AI読み取り.*(有効|使う)/ }) as HTMLInputElement;
+      expect(enabledToggle.checked).toBe(false);
+      expect(enabledToggle.disabled).toBe(true);
+
+      // 新しいキーを入れても、有効フラグを明示的にオンにし直すまではGemini経路にならない
+      fireEvent.change(screen.getByLabelText("Gemini APIキー"), { target: { value: "new-key" } });
+      const fileInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+      selectFile(fileInput, new File(["dummy"], "receipt.png", { type: "image/png" }));
+      expect(enqueueMock).toHaveBeenCalledTimes(1);
+      expect(runGeminiPhotoJobMock).not.toHaveBeenCalled();
+    });
+
     it("Gemini成功(複数レシート): 1レシート=1行としてneeds-review状態(候補1位=AI回答)で展開される", async () => {
       runGeminiPhotoJobMock.mockImplementation(
         async (
