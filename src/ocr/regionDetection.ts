@@ -190,6 +190,11 @@ function horizontalGap(a: Box, b: Box): number {
   return aRight < bLeft ? bLeft - aRight : aLeft - bRight;
 }
 
+/** 水平方向の重なり幅(0以上。重なっていなければ0)。[task-23実機診断調査] */
+function horizontalOverlap(a: Box, b: Box): number {
+  return Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+}
+
 /** 単純なUnion-Find(経路圧縮のみ、ランクなし。box数が数百程度の用途では十分)。 */
 function createUnionFind(n: number) {
   const parent = Array.from({ length: n }, (_, i) => i);
@@ -232,10 +237,15 @@ function groupByCluster(boxes: Box[], sameCluster: (a: Box, b: Box) => boolean):
  * この除外は「複数行が誤って1boxに結合された検出ノイズを取り除く」前処理であり、
  * 分割判定自体が使う局所中央値行高とは目的が異なるため)。
  *
- * 除外されたboxはこの後のXY-cut全体(行マージ・ギャップ判定・領域bbox)に一切使われない。
- * ただし各領域の実際のOCR(`recognize()`)は領域クロップ後の画像全体に対して独立に
- * 再実行されるため、ここでの除外は「どこで領域を区切るか」の判定にのみ影響し、
- * 文字認識結果(合計金額の読み取り)を欠落させることはない。
+ * 除外されたboxは行マージ(`mergeBoxesIntoLines`)・sideA/sideB振り分け・box数/Y帯数/
+ * aspect比/面積比などの採用条件統計には一切使われない([task-23実機診断調査]
+ * `findBestSplit`のコメント参照: Y軸のギャップ候補生成(軸投影区間)にのみ、除外box自身の
+ * 座標を「占有区間」として算入する。これは`excludeOversizedBoxes`を無効化するものではなく、
+ * 「行として結合はしないが、その空間を空白とは扱わない」という区別)。領域の最終bboxには
+ * `reabsorbExcludedBoxesIntoRegions`で別途(グローバルに1回だけ)安全な場合のみ再吸収される。
+ * 各領域の実際のOCR(`recognize()`)は領域クロップ後の画像全体に対して独立に再実行される
+ * ため、ここでの除外は「どこで領域を区切るか」の判定にのみ影響し、文字認識結果
+ * (合計金額の読み取り)を欠落させることはない。
  */
 export function excludeOversizedBoxes(boxes: readonly Box[], thresholds: XyCutThresholds = DEFAULT_THRESHOLDS): Box[] {
   if (boxes.length === 0) return [...boxes];
@@ -304,7 +314,7 @@ function aspectRatio(b: Box): number {
   return Math.max(b.width, b.height) / Math.max(1, Math.min(b.width, b.height));
 }
 
-export type SplitResult = { sideA: Box[]; sideB: Box[] };
+export type SplitResult = { sideA: Box[]; sideB: Box[]; excludedA: Box[]; excludedB: Box[] };
 
 /**
  * §16.2 point2/3: 1ノード分の分割を試みる。X/Y両軸のギャップ候補をサイズの大きい順に
@@ -331,12 +341,60 @@ export type SplitResult = { sideA: Box[]; sideB: Box[] };
  * - 分割根拠が弱いノードは「2枚を1領域のまま」に留まる(安全側のデフォルト。
  *   誤って2分割してどちらか一方の合計だけを拾う事故より、1領域のまま
  *   needs-reviewに倒れる方が§16.3の安全弁の意図に合致する)
+ *
+ * [task-23実機診断調査] `excludedBoxes`(このノードに属する、`excludeOversizedBoxes`で
+ * 行マージのシードから除外済みの巨大box群)は、ギャップ候補の**生成**(軸投影区間のunion)
+ * にのみ算入し、sideA/sideB振り分け・box数/Y帯数/aspect比/面積比の各採用条件チェックには
+ * 一切使わない(`boxes`のみで判定。巨大boxは通常の文字行として異常な形状のため、これらの
+ * 統計を歪めないため)。実機(iPhone Safari)の`detect()`は、レシートの価格列のように
+ * 右揃えの数字が行間を詰めて並ぶ領域を、複数行分の高さを持つ1つの巨大boxとして検出する
+ * ことがある。この巨大boxを軸投影区間から完全に除外してしまうと、巨大boxが実際には
+ * 覆っているはずのY範囲が「空白(ギャップ)」に見えてしまい、本来1つの領域であるはずの
+ * レシートが、巨大boxの上下で誤って2領域に分割される(実機診断データでの実測、詳細は
+ * `.superpowers/sdd/task-23-report.md`)。巨大box自体をギャップ候補の**採用判定**にまで
+ * 使わないのは、`excludeOversizedBoxes`が防ごうとしている別の問題(巨大boxが隣接する
+ * 別レシートの領域まで橋渡ししてしまい、本来分割すべき2レシートが誤って1領域に結合される
+ * こと)を再発させないため。ギャップ候補生成に算入しても、sideA/sideBの実体
+ * (`boxes`ベース)には一切含まれないため、box数・Y帯数などの採用条件は`excludedBoxes`の
+ * 有無に関わらず「実際に検出された通常の文字行だけで採用条件を満たすか」を厳密に問い続ける
+ * (既存の回帰テスト`task-19実写真調査: 狭いギャップ+複数行結合の巨大box(アイロン相当の
+ * 横断クラスタ)があっても3分割できる`・`task-19実写真回帰テスト`の両方が引き続き
+ * パスすることで検証済み。詳細な境界条件の検討過程は`.superpowers/sdd/task-23-report.md`参照)。
+ *
+ * [既知のトレードオフ、Codexレビュー指摘] 「巨大boxは複数行の誤結合(縦方向の現象)だから
+ * Y座標は信頼できる」という前提は絶対ではない。異常判定の根拠はあくまで「高さ」であり、
+ * 巨大boxのY範囲が(例えば極端に間隔の狭い)縦に並ぶ2枚の別レシートの間の正当なYギャップを
+ * 偶然跨いでしまう可能性は理論上排除できない。その場合、本来2領域に分割すべきレシートが
+ * 誤って1領域(`single`)に結合される。これは今回の修正方針(「誤分割(1レシートが複数
+ * 領域に割れる)を減らす」)が必然的に伴うトレードオフであり、`weakGapMultiplier`等
+ * 既存の設計判断(§16.3の安全弁、`findBestSplit`の一番上のコメント参照)と同じく
+ * 「誤って2分割してどちらか一方の合計だけを拾う事故より、1領域のままneeds-reviewに
+ * 倒れる方が安全」という考え方の延長線上にある。この副作用は合成フィクスチャで再現・
+ * 記録済み(`regionDetection.test.ts`の`task-23`関連テスト参照)。
  */
-export function findBestSplit(boxes: Box[], thresholds: XyCutThresholds, longSide: number): SplitResult | null {
+export function findBestSplit(
+  boxes: Box[],
+  thresholds: XyCutThresholds,
+  longSide: number,
+  excludedBoxes: readonly Box[] = [],
+): SplitResult | null {
   const medianLineHeight = median(boxes.map((b) => b.height));
   const minGutter = Math.max(thresholds.minGutterLineHeightFactor * medianLineHeight, thresholds.minGutterLongSideFraction * longSide);
   const weakFloor = thresholds.weakGapMultiplier * minGutter;
-  const candidates = [...findGapsOnAxis(boxes, "x", minGutter), ...findGapsOnAxis(boxes, "y", minGutter)].sort(
+  // [task-23実機診断調査] ギャップ候補の生成(占有ヒストグラム)には、行マージのシードからは
+  // 除外済みの巨大boxも含める(=巨大boxが覆う範囲はギャップにならない)。上記コメント参照。
+  //
+  // Y軸にのみ適用し、X軸には適用しない。除外される巨大boxは`excludeOversizedBoxes`の
+  // コメントの通り「価格列のように行間を詰めて並ぶ数字が複数行分の高さで1boxに誤結合された」
+  // ものであり、この誤結合は本質的に**縦方向**(複数の「行」にまたがる)の現象であって、
+  // 横方向に複数の「列」(=複数の異なるレシート)へまたがる現象ではない。X軸にも適用すると、
+  // 実際に別レシートの間にある正当なギャップへ巨大boxの水平方向の広がりが橋渡ししてしまい、
+  // 本来分割すべき別々のレシートが誤って1領域に結合される(既存の
+  // 模擬フィクスチャ`task-19実写真調査: 狭いギャップ+複数行結合の巨大box(アイロン相当の
+  // 横断クラスタ)`・実写真フィクスチャ`task-19実写真回帰テスト`の両方で実測・確認済み。
+  // 詳細は`.superpowers/sdd/task-23-report.md`)。
+  const yProjectionBoxes = excludedBoxes.length > 0 ? [...boxes, ...excludedBoxes] : boxes;
+  const candidates = [...findGapsOnAxis(boxes, "x", minGutter), ...findGapsOnAxis(yProjectionBoxes, "y", minGutter)].sort(
     (a, b) => b.size - a.size,
   );
 
@@ -363,7 +421,42 @@ export function findBestSplit(boxes: Box[], thresholds: XyCutThresholds, longSid
     const areaB = bboxB.width * bboxB.height;
     if (areaA / parentArea < thresholds.minAreaFraction || areaB / parentArea < thresholds.minAreaFraction) continue;
 
-    return { sideA, sideB };
+    // [task-23実機診断調査] 子ノードへの再帰でも同じ軸投影の恩恵を受けられるよう、
+    // このノードに属していた除外box群も子ノードのexcludedA/excludedBへ振り分けて渡す。
+    //
+    // 分割軸がYの場合: この除外boxたちは`yProjectionBoxes`としてこの分割候補自身の
+    // ギャップ発見に使われている。つまり除外boxのY範囲は(定義上)このY方向の空白ギャップの
+    // 外側にあるはずで、splitPointを跨いで存在するとは考えにくい。通常boxのsideA/sideB
+    // 判定と同じ「中心点がsplitPointのどちら側か」基準で問題ない(Codexレビューで安全と
+    // 確認済み)。
+    //
+    // 分割軸がXの場合: 除外boxはX軸のギャップ生成には使っていない(意図的、上記コメント
+    // 参照)ため、除外boxがX方向のsplitPointを跨いで存在する可能性がある(Codexレビュー
+    // 指摘)。この場合に中心点だけで機械的にどちらか一方の子へ丸ごと渡すと、実際には
+    // 両方の子の実bboxと重なる除外box(=本来どちらの子にも部分的に属する)が、片方の子だけの
+    // Y軸投影区間に混入し、その子の内部にある正当なYギャップを誤って抑止しかねない。
+    // このため、X分割の場合のみ子の実bbox(`bboxA`/`bboxB`)との水平方向の重なりで判定し、
+    // 片方のみと重なる場合だけその子へ渡す。両方と重なる(帰属が曖昧)、またはどちらとも
+    // 重ならない場合はどちらの子のexcludedにも渡さない(このノード配下のY軸投影からは
+    // 除外されるが、`buildLayoutDecision`側の`reabsorbExcludedBoxesIntoRegions`が最終
+    // 領域集合に対してグローバルに1回、除外box全部を再吸収するため、情報が失われる
+    // わけではない)。
+    const excludedA: Box[] = [];
+    const excludedB: Box[] = [];
+    for (const box of excludedBoxes) {
+      if (candidate.axis === "y") {
+        const center = box.y + box.height / 2;
+        (center < candidate.splitPoint ? excludedA : excludedB).push(box);
+      } else {
+        const overlapsA = horizontalOverlap(box, bboxA) > 0;
+        const overlapsB = horizontalOverlap(box, bboxB) > 0;
+        if (overlapsA && !overlapsB) excludedA.push(box);
+        else if (overlapsB && !overlapsA) excludedB.push(box);
+        // 両方/どちらとも重ならない場合は帰属が曖昧なため、どちらの子にも渡さない。
+      }
+    }
+
+    return { sideA, sideB, excludedA, excludedB };
   }
   return null;
 }
@@ -389,17 +482,23 @@ function pointToRectDistanceSquared(px: number, py: number, r: Box): number {
 
 /**
  * [task-19実写真調査 追試(Codexレビュー指摘)] `excludeOversizedBoxes`で除外した生boxは
- * 行マージ・分割判定には使わないが、実際の文字内容(例えば合計金額そのもの)を含んでいる
- * 可能性がある。除外box自身の座標は最終的な領域bbox(→`cropRectForRegion`のクロップ範囲)の
- * 計算に一切使われないため、除外boxが「生き残った行群のbboxからクロップ余白を超えて
- * 離れた位置」にある場合、後段のOCR入力(クロップ画像)からその内容が丸ごと欠落しうる
- * (Codexレビュー指摘: 除外boxの位置次第では実在する。実写真では偶然クロップ余白の範囲内に
- * 収まっていたため顕在化しなかった)。
+ * 行マージ・sideA/sideB振り分けの実体には使わないが([task-23実機診断調査]
+ * `findBestSplit`のY軸ギャップ候補生成にのみ、占有区間として一時的に算入されることがある。
+ * それとは別に、除外boxは実際の文字内容(例えば合計金額そのもの)を含んでいる可能性がある。
+ * 除外box自身の座標は最終的な領域bbox(→`cropRectForRegion`のクロップ範囲)の計算に
+ * (この関数が呼ばれるまでは)一切使われないため、除外boxが「生き残った行群のbboxから
+ * クロップ余白を超えて離れた位置」にある場合、後段のOCR入力(クロップ画像)からその内容が
+ * 丸ごと欠落しうる(Codexレビュー指摘: 除外boxの位置次第では実在する。実写真では偶然
+ * クロップ余白の範囲内に収まっていたため顕在化しなかった)。
  *
  * この関数は、各除外boxを「中心点が最も近い領域」へ、その領域のbboxを**他のどの領域とも
  * 重ならない範囲でのみ**拡張して取り込む。拡張後に他領域と重なってしまう場合は、その除外box
  * の取り込みを諦めて元のbboxのまま残す(安全側: 隣接領域を跨いで誤って橋渡ししてしまう
- * `excludeOversizedBoxes`導入前の不具合を、クロップ段階で再発させないため)。
+ * `excludeOversizedBoxes`導入前の不具合を、クロップ段階で再発させないため)。この「最も近い
+ * 領域」への割り当ては、`buildLayoutDecision`内の分割探索中に`findBestSplit`が行う
+ * 「分割軸・分割点による`excludedA`/`excludedB`振り分け」(ギャップ候補生成用、木を降りる
+ * ための一時的な帰属)とは**独立した別のアルゴリズム**であり、一致しなくてもよい(こちらは
+ * 分割確定後の最終領域集合に対して、除外box全部を1回だけグローバルに割り当て直す)。
  * `region.boxes`(`cropRectForRegion`の中央値行高計算に使う)は変更しない(除外boxは
  * 通常より高いため、統計に混ぜると中央値行高が歪む)。
  */
@@ -464,19 +563,25 @@ export function buildLayoutDecision(
   const longSide = Math.max(imageWidth, imageHeight);
   const maxLeaves = thresholds.maxRegions;
 
-  const queue: Box[][] = [lines];
+  // [task-23実機診断調査] 各ノードには、そのノードの実体である行box群(`lines`)に加えて、
+  // 空間的にそのノードへ帰属する除外済み巨大box群(`excluded`)も一緒に運ぶ。`findBestSplit`
+  // が返す`excludedA`/`excludedB`(採用された分割候補と同じ軸・分割点で振り分け済み)を
+  // そのまま子ノードへ引き継ぐことで、深い階層でも占有ヒストグラムに巨大boxの範囲を
+  // 反映し続けられる(詳細は`findBestSplit`のコメント参照)。
+  type Node = { lines: Box[]; excluded: Box[] };
+  const queue: Node[] = [{ lines, excluded: excludedBoxes }];
   const resolved: Box[][] = [];
   let truncated = false;
 
   while (queue.length > 0) {
     const node = queue.shift()!;
-    const candidate = findBestSplit(node, thresholds, longSide);
+    const candidate = findBestSplit(node.lines, thresholds, longSide, node.excluded);
 
     if (candidate === null) {
       // 分割根拠なし(weak候補も含めて証拠不十分)。このノードは1領域のまま残す
       // (§16.3の安全弁の考え方を分割単位に局所化したもの。詳細は`findBestSplit`の
       // コメント・`.superpowers/sdd/v13-spike.md`参照)。
-      resolved.push(node);
+      resolved.push(node.lines);
       continue;
     }
 
@@ -484,11 +589,11 @@ export function buildLayoutDecision(
     // 打ち切る(§16.2 point4 MAX_REGIONS、§16.3「上限到達」)。
     if (resolved.length + queue.length + 1 >= maxLeaves) {
       truncated = true;
-      resolved.push(node);
+      resolved.push(node.lines);
       continue;
     }
 
-    queue.push(candidate.sideA, candidate.sideB);
+    queue.push({ lines: candidate.sideA, excluded: candidate.excludedA }, { lines: candidate.sideB, excluded: candidate.excludedB });
   }
 
   const regions: Region[] = reabsorbExcludedBoxesIntoRegions(
