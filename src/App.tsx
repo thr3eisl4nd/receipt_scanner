@@ -16,9 +16,23 @@ import {
 import { createPpuPaddleEngine } from "./ocr/ppuPaddleEngine";
 import { reducer, toPersisted, fromPersisted, computeTotals, nextReceiptLabel, type AppState, type RowPatch } from "./state/reducer";
 import { saveState, loadState, currentMonth } from "./state/storage";
+import { GeminiSettingsPanel } from "./components/GeminiSettingsPanel";
+import { loadGeminiSettings, saveGeminiApiKey, saveGeminiEnabled, isGeminiActive, type GeminiSettings } from "./gemini/settings";
+import { runGeminiPhotoJob, type GeminiPhotoJobResult } from "./gemini/photoJob";
 import type { Row } from "./types";
 
 const yen = (n: number) => n.toLocaleString("ja-JP");
+
+/** task-26(Gemini連携): Gemini呼び出し失敗→内蔵OCRフォールバック時の通知文言。
+ *  原因別に案内を変え、未知の理由(将来`GeminiExtractFailureReason`が増えた場合等)は
+ *  汎用文言にフォールバックする。 */
+const GEMINI_FALLBACK_MESSAGES: Record<string, string> = {
+  "rate-limit": "Geminiの利用上限に達したため、内蔵OCRで読み取ります",
+  network: "Geminiに接続できなかったため、内蔵OCRで読み取ります",
+  "http-error": "Gemini呼び出しに失敗したため、内蔵OCRで読み取ります",
+  "parse-error": "Geminiの応答を解釈できなかったため、内蔵OCRで読み取ります",
+  "encode-error": "画像の変換に失敗したため、内蔵OCRで読み取ります",
+};
 
 // 初回起動(永続化データが無い)時のデフォルト状態は人1人・初期名「わたし」(設計ドキュメント§14.1)。
 const initialState = (): AppState => {
@@ -65,6 +79,20 @@ type PhotoGroup = {
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
   const [ocrEvent, setOcrEvent] = useState<QueueStatusEvent | null>(null);
+  // task-26(Gemini連携、設計ドキュメント§19): APIキー・有効フラグは`PersistedState`
+  // (state.rows/people)とは別のlocalStorage名前空間(`src/gemini/settings.ts`)に
+  // 保存する(オーケストレーター指示: PersistedStateスキーマは変更禁止)。読み込みは
+  // マウント時1回のみ(他タブでの変更は追随しない、既存`loadState`と同じ簡潔さ)。
+  const [geminiSettings, setGeminiSettings] = useState<GeminiSettings>(() => loadGeminiSettings());
+  // Gemini呼び出し失敗→内蔵OCRへの自動フォールバック発生時の通知(task-26)。
+  // role="alert"で即座に読み上げ、一定時間後に自動的に消える(Codexレビュー方針:
+  // 恒久的なバナーにすると複数回フォールバックが起きた際に画面を占有し続ける)。
+  const [geminiNotice, setGeminiNotice] = useState<string | null>(null);
+  const geminiNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Gemini呼び出しを直列実行するための単純なpromiseレーン(`src/ocr/queue.ts`の
+  // `runExclusive`と同じ考え方)。無料枠のレート制限(RPM)を考慮し、複数写真を
+  // 同時追加してもGemini呼び出しは1件ずつ順に送る。
+  const geminiLaneRef = useRef<Promise<void>>(Promise.resolve());
   const seenFiles = useRef(new Set<string>());
   // アンマウント時のクリーンアップ(サムネイルURL解放)用に最新のrowsを参照できるようにする。
   const rowsRef = useRef(state.rows);
@@ -293,6 +321,13 @@ export default function App() {
     return () => window.removeEventListener("pagehide", handlePageHide);
   }, []);
 
+  // task-26: アンマウント時、Geminiフォールバック通知の自動消去タイマーを残さない。
+  useEffect(() => {
+    return () => {
+      if (geminiNoticeTimeoutRef.current) clearTimeout(geminiNoticeTimeoutRef.current);
+    };
+  }, []);
+
   // v1.3(§16.5、Codexレビュー最終ゲート指摘I7): 正常完了(全領域成功・ambiguous/
   // nearLimitなし)したPhotoGroupの元Fileを解放する。`photoGroupRef`のエントリ自体を
   // 削除することでFile参照を切る(回復導線を表示する理由が無くなったグループを
@@ -328,8 +363,138 @@ export default function App() {
     });
   };
 
+  // task-26(Gemini連携)。APIキー・有効フラグの変更をlocalStorageへ即時反映する。
+  // 保存失敗(プライベートブラウジング等)は無視する(既存機能に影響しない設定値のため、
+  // state.saveFailedのような専用UIは設けない。次回起動時に未設定へ戻るだけ)。
+  const onGeminiApiKeyChange = (apiKey: string) => {
+    setGeminiSettings((s) => ({ ...s, apiKey }));
+    saveGeminiApiKey(apiKey);
+  };
+  const onGeminiEnabledChange = (enabled: boolean) => {
+    setGeminiSettings((s) => ({ ...s, enabled }));
+    saveGeminiEnabled(enabled);
+  };
+
+  /** 6秒後に自動的に消える通知(Codexレビュー方針: 連続フォールバック時に画面を
+   *  占有し続けないよう、DiagnosticsCopyButton等の「2秒で消える」パターンより長めに
+   *  取りつつも恒久化はしない)。 */
+  const showGeminiFallbackNotice = (reason: string) => {
+    if (geminiNoticeTimeoutRef.current) clearTimeout(geminiNoticeTimeoutRef.current);
+    setGeminiNotice(GEMINI_FALLBACK_MESSAGES[reason] ?? "Gemini読み取りに失敗したため、内蔵OCRで読み取ります");
+    geminiNoticeTimeoutRef.current = setTimeout(() => {
+      geminiNoticeTimeoutRef.current = null;
+      setGeminiNotice(null);
+    }, 6000);
+  };
+
+  /** 行が現在も「Gemini/OCRの結果待ち(processing:true)」かを最新state基準で判定する。
+   *  非同期処理(Gemini呼び出し)の完了時、この判定がfalseなら「ユーザーが待機中に
+   *  削除・手修正・キャンセルした」ということなので、結果もフォールバックも適用しない
+   *  (`resolveActiveRow`と同じ考え方)。 */
+  function currentPendingRow(id: string): Row | undefined {
+    const row = rowsRef.current.find((r) => r.id === id);
+    return row?.processing ? row : undefined;
+  }
+
+  /**
+   * 写真1枚をGemini経路で処理する(task-26、設計ドキュメント§19)。プレースホルダ行
+   * (`id`)は`onFiles`側で既に追加済みの前提。
+   *
+   * - 画像デコード失敗: 内蔵OCRでも同じFileの再デコードで同じエラーになるだけなので
+   *   フォールバックせず、そのままfailed確定する。
+   * - Gemini呼び出し失敗(レート制限・通信エラー・解釈不能等): 通知を出し、内蔵OCR
+   *   キューへ同じFileを渡す(`enqueueForRow`、既存の失敗時再試行と同じ経路)。
+   * - 成功: `replacePendingRow`でプレースホルダを1〜N行(1レシート=1行)へ展開する。
+   *   結果は必ず`needs-review`(候補1位=AI回答)にする — 誤読を勝手に確定しない
+   *   安全設計を内蔵OCRと同じく維持する。
+   */
+  const runGeminiForRow = async (id: string, file: File) => {
+    if (!currentPendingRow(id)) return;
+
+    let thumbnailBlob: Blob | undefined;
+    let previewBlob: Blob | undefined;
+    let result: GeminiPhotoJobResult;
+    try {
+      result = await runGeminiPhotoJob(file, geminiSettings.apiKey, {
+        onThumbnail: (blob) => {
+          thumbnailBlob = blob;
+        },
+        onPreview: (blob) => {
+          previewBlob = blob;
+        },
+      });
+    } catch (err) {
+      // runGeminiPhotoJob自体は内部で例外を握りつぶす設計だが、予期しない例外で
+      // 行がprocessing:trueのまま固まるのを防ぐための最終防波堤(Codexレビュー方針、
+      // queue.ts全体の防御的コーディングと同じ考え方)。
+      console.error("Gemini photo job failed unexpectedly:", err);
+      if (!currentPendingRow(id)) return;
+      showGeminiFallbackNotice("http-error");
+      enqueueForRow(id, { file });
+      return;
+    }
+
+    const pendingRow = currentPendingRow(id);
+    if (!pendingRow) return; // 待機中に削除・手修正・キャンセルされた
+
+    if (result.kind === "load-error") {
+      dispatch({
+        type: "applyOcrResult",
+        id,
+        patch: { amountYen: null, status: "failed", candidates: [], processing: false, failureKind: result.failureKind },
+      });
+      return;
+    }
+
+    if (result.kind === "fallback") {
+      showGeminiFallbackNotice(result.reason);
+      enqueueForRow(id, { file }); // 内蔵OCRへ自動フォールバック(同じ行id・Fileを再利用)
+      return;
+    }
+
+    // 成功: 1レシート=1行としてプレースホルダをN行へ展開する。Object URLは
+    // 行ごとに独立して発行する(同じURL文字列を複数行で共有すると、1行だけ削除された
+    // 際に他行の表示中URLまでrevokeしてしまう事故になるため)。
+    retryFilesRef.current.delete(id);
+    const newRowIds = result.totals.map(() => crypto.randomUUID());
+    dispatch({
+      type: "replacePendingRow",
+      placeholderId: id,
+      newRows: newRowIds.map((newId, i) => ({
+        id: newId,
+        payerId: pendingRow.payerId,
+        amountYen: result.totals[i],
+        status: "needs-review" as const,
+        candidates: [result.totals[i]],
+        processing: false,
+        thumbnailUrl: thumbnailBlob ? URL.createObjectURL(thumbnailBlob) : undefined,
+        previewUrl: previewBlob ? URL.createObjectURL(previewBlob) : undefined,
+      })),
+    });
+  };
+
+  /** Gemini呼び出しを1件ずつ直列実行するための単純なpromiseチェーン(`src/ocr/queue.ts`の
+   *  `runExclusive`と同じ考え方)。前段のジョブが例外で終わっても後続は必ず実行される。 */
+  function chainGeminiJob(id: string, file: File): void {
+    const previous = geminiLaneRef.current;
+    const job = previous.then(
+      () => runGeminiForRow(id, file),
+      () => runGeminiForRow(id, file),
+    );
+    geminiLaneRef.current = job.then(
+      () => undefined,
+      (err) => {
+        console.error("Gemini job failed unexpectedly:", err);
+      },
+    );
+  }
+
   const onFiles = (payerId: string, files: File[]) => {
     const rows: Row[] = [];
+    const geminiJobs: Array<{ id: string; file: File }> = [];
+    // task-26: キー設定済み&有効時のみGemini経路を使う(未設定なら従来通り内蔵OCR)。
+    // バッチ全体で1回だけ判定する(1枚ごとに設定が変わることはない)。
+    const useGemini = isGeminiActive(geminiSettings);
     const labelFor = nextReceiptLabel(state.rows);
     let offset = 1;
     for (const file of files) {
@@ -352,13 +517,23 @@ export default function App() {
         source: "ocr",
         candidates: [],
         // フル画像のObject URLはここでは作らない(Codexレビュー指摘I1)。
-        // サムネイルはOCRキューが処理済み縮小canvasから生成し、onThumbnailで届く。
+        // サムネイルはOCR/Geminiいずれの経路でも処理済み縮小canvasから生成する。
         processing: true,
       });
+      // Gemini経路が呼び出し失敗した場合も内蔵OCRへ同じFileでフォールバックするため、
+      // 経路によらず常にretryFilesRefへ登録しておく。
       retryFilesRef.current.set(id, { file });
-      enqueueForRow(id, { file });
+      if (useGemini) {
+        geminiJobs.push({ id, file });
+      } else {
+        enqueueForRow(id, { file });
+      }
     }
     if (rows.length > 0) dispatch({ type: "addRows", rows });
+    // task-26: Gemini呼び出しは1件ずつ直列実行する(無料枠のレート制限対策、
+    // `chainGeminiJob`参照)。プレースホルダ行は上のaddRowsで既に全件表示済みなので、
+    // ここでは順次処理を予約するだけでよい。
+    for (const job of geminiJobs) chainGeminiJob(job.id, job.file);
   };
 
   const onRemove = (id: string) => {
@@ -556,6 +731,13 @@ export default function App() {
         <header className="receipt-header">
           <h1>レシート清算スキャナー <span className="month">{state.month}</span></h1>
         </header>
+        {/* task-26(Gemini連携、設計ドキュメント§19): オプトインのAI読み取り設定。
+            v1.4デザインに調和する控えめな歯車ボタンの奥に置く(既定は折りたたみ)。 */}
+        <GeminiSettingsPanel
+          settings={geminiSettings}
+          onApiKeyChange={onGeminiApiKeyChange}
+          onEnabledChange={onGeminiEnabledChange}
+        />
         <PeopleManager
           people={state.people}
           rows={state.rows}
@@ -590,6 +772,12 @@ export default function App() {
         )}
 
         {state.saveFailed && <p role="alert" className="error">自動保存できません(端末の空き容量を確認してください)</p>}
+        {/* task-26: Gemini呼び出し失敗→内蔵OCRへの自動フォールバック通知(一定時間後に自動的に消える)。 */}
+        {geminiNotice && (
+          <p role="alert" className="error gemini-fallback-notice">
+            {geminiNotice}
+          </p>
+        )}
         <ul className="receipt-list">
           {state.rows.flatMap((row, index) => {
             const elements = [

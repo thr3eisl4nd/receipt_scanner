@@ -1,4 +1,4 @@
-import type { Person, PersistedState, Row } from "../types";
+import type { Person, PersistedState, Row, VerificationStatus } from "../types";
 import { PERSON_COLOR_COUNT } from "../personColor";
 
 export type AppState = { month: string; people: Person[]; rows: Row[]; saveFailed: boolean };
@@ -20,7 +20,28 @@ export type Action =
   // v1.3(§16.4): 写真1枚のプレースホルダ行(placeholderId)を、パス1(検出)完了時に
   // N行(領域の数だけ)へ原子的に置換する。ラベル(「レシート N」)の採番はこの置換時に
   // 行う(newRows自体は採番前のid/payerIdのみ持つ)。
-  | { type: "replacePendingRow"; placeholderId: string; newRows: Array<{ id: string; payerId: string }> };
+  //
+  // task-26(Gemini連携、設計ドキュメント§19): Gemini経路は1回のAPI呼び出しで
+  // 「何枚のレシートが写っているか」と「各合計金額」の両方が同時に判明するため、classicの
+  // OCRキュー経由(空行→非同期結果反映の2段階)を経ずに、置換時点で確定済みの結果
+  // (amountYen/status/candidates/processing/thumbnailUrl/previewUrl)を持つ行を直接
+  // 作れるようにする。いずれも省略可能で、省略時は従来通り
+  // amountYen:null/status:"failed"/candidates:[]/processing:true(thumbnailUrl/previewUrlは
+  // undefined)になる(既存呼び出し元=onRegionsコールバックとの後方互換)。
+  | {
+      type: "replacePendingRow";
+      placeholderId: string;
+      newRows: Array<{
+        id: string;
+        payerId: string;
+        amountYen?: number | null;
+        status?: VerificationStatus;
+        candidates?: number[];
+        processing?: boolean;
+        thumbnailUrl?: string;
+        previewUrl?: string;
+      }>;
+    };
 
 /** 円整数として妥当か(null許容)。NaN/Infinity/小数を拒否する。 */
 function isYenAmount(value: number | null): boolean {
@@ -183,16 +204,27 @@ export function reducer(state: AppState, action: Action): AppState {
         labelFor = nextReceiptLabel(rowsWithoutPlaceholder);
       }
 
-      const newRows: Row[] = validNewRows.map((nr, i) => ({
-        id: nr.id,
-        payerId: nr.payerId,
-        amountYen: null,
-        label: labelFor(i + 1),
-        status: "failed",
-        source: "ocr",
-        candidates: [],
-        processing: true,
-      }));
+      // task-26: 呼び出し側(Gemini経路)が指定した確定済みの結果を採用する。amountYenは
+      // 他アクション(addRows/updateRow等)と同じisYenAmount不変条件を適用し、不正な値
+      // (NaN/Infinity/小数等)が来てもamountYen:null/status:"failed"へ安全側に落とす
+      // (呼び出し側の実装ミス・レスポンス改変等に対する防御、Codexレビュー想定)。
+      const newRows: Row[] = validNewRows.map((nr, i) => {
+        const requestedAmount = nr.amountYen ?? null;
+        const validAmount = isYenAmount(requestedAmount) ? requestedAmount : null;
+        const status: VerificationStatus = isYenAmount(requestedAmount) ? (nr.status ?? "failed") : "failed";
+        return {
+          id: nr.id,
+          payerId: nr.payerId,
+          amountYen: validAmount,
+          label: labelFor(i + 1),
+          status,
+          source: "ocr",
+          candidates: nr.candidates ?? [],
+          thumbnailUrl: nr.thumbnailUrl,
+          previewUrl: nr.previewUrl,
+          processing: nr.processing ?? true,
+        };
+      });
 
       return {
         ...state,

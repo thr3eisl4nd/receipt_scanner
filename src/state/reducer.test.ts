@@ -732,4 +732,94 @@ describe("replacePendingRow (v1.3 §16.4: プレースホルダ行→N行への�
     expect(labelFor(1)).toBe("レシート 8");
     expect(labelFor(2)).toBe("レシート 9");
   });
+
+  // task-26(Gemini連携): Gemini経路は検出と同時に金額が判明済みのため、classicのOCR
+  // キュー経由(空行→非同期結果反映)を経ずに、置換時点で確定状態(amountYen/status/
+  // candidates/processing/thumbnailUrl/previewUrl)を持つ行を直接作れるようにする。
+  describe("task-26: 確定済み結果を伴う置換(Gemini連携)", () => {
+    test("amountYen/status/candidates/processing/thumbnailUrl/previewUrlを指定すると、その値がそのまま採用される", () => {
+      const s = reducer(base, {
+        type: "addRows",
+        rows: [row({ id: "placeholder", label: "レシート 1", processing: true })],
+      });
+      const next = reducer(s, {
+        type: "replacePendingRow",
+        placeholderId: "placeholder",
+        newRows: [
+          {
+            id: "r1",
+            payerId: HUSBAND_ID,
+            amountYen: 1234,
+            status: "needs-review",
+            candidates: [1234],
+            processing: false,
+            thumbnailUrl: "blob:thumb-1",
+            previewUrl: "blob:preview-1",
+          },
+          {
+            id: "r2",
+            payerId: HUSBAND_ID,
+            amountYen: 500,
+            status: "needs-review",
+            candidates: [500],
+            processing: false,
+            thumbnailUrl: "blob:thumb-1", // 同一写真由来なので同じBlobだが、Object URLは行ごとに別々に発行された前提
+            previewUrl: "blob:preview-1",
+          },
+        ],
+      });
+
+      expect(next.rows.map((r) => r.id)).toEqual(["r1", "r2"]);
+      expect(next.rows[0]).toMatchObject({
+        amountYen: 1234,
+        status: "needs-review",
+        candidates: [1234],
+        processing: false,
+        thumbnailUrl: "blob:thumb-1",
+        previewUrl: "blob:preview-1",
+        source: "ocr",
+        label: "レシート 1",
+      });
+      expect(next.rows[1]).toMatchObject({
+        amountYen: 500,
+        status: "needs-review",
+        candidates: [500],
+        processing: false,
+        label: "レシート 2",
+      });
+    });
+
+    test("フィールド省略時は従来通りamountYen:null/status:failed/candidates:[]/processing:trueになる(既存呼び出し元との後方互換)", () => {
+      const s = reducer(base, {
+        type: "addRows",
+        rows: [row({ id: "placeholder", label: "解析中…", processing: true })],
+      });
+      const next = reducer(s, {
+        type: "replacePendingRow",
+        placeholderId: "placeholder",
+        newRows: [{ id: "r1", payerId: HUSBAND_ID }],
+      });
+      expect(next.rows[0]).toMatchObject({
+        amountYen: null,
+        status: "failed",
+        candidates: [],
+        processing: true,
+      });
+      expect(next.rows[0].thumbnailUrl).toBeUndefined();
+      expect(next.rows[0].previewUrl).toBeUndefined();
+    });
+
+    test("不正なamountYen(小数・NaN等)は無視され、amountYen:null/status:failedへ落ちる(不変条件の防御)", () => {
+      const s = reducer(base, {
+        type: "addRows",
+        rows: [row({ id: "placeholder", label: "解析中…", processing: true })],
+      });
+      const next = reducer(s, {
+        type: "replacePendingRow",
+        placeholderId: "placeholder",
+        newRows: [{ id: "r1", payerId: HUSBAND_ID, amountYen: 12.5, status: "needs-review", candidates: [12.5] }],
+      });
+      expect(next.rows[0]).toMatchObject({ amountYen: null, status: "failed" });
+    });
+  });
 });

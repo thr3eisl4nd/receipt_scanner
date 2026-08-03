@@ -1,0 +1,98 @@
+import { useId, useState } from "react";
+import type { GeminiSettings } from "../gemini/settings";
+
+type Props = {
+  settings: GeminiSettings;
+  onApiKeyChange(apiKey: string): void;
+  onEnabledChange(enabled: boolean): void;
+};
+
+const AI_STUDIO_KEY_URL = "https://aistudio.google.com/apikey";
+
+/**
+ * 「AI読み取り(Gemini)」設定パネル(task-26、設計ドキュメント§19、オプトイン)。
+ *
+ * v1.4デザイン(quiet luxury)に調和させ、控えめな歯車ボタン(既定は折りたたみ)の
+ * 奥に置く。取り込みボタン群のような主要導線とは異なり、明示的に開かないと
+ * 目に入らない位置づけにする(オプトイン機能の重みに合わせた情報設計)。
+ *
+ * 表示する要素(オーケストレーター指示どおり):
+ * - APIキー入力(既定でマスク、表示切り替え可能)
+ * - 有効/無効トグル(APIキー未設定の間はdisabled: 「キー無し・有効」という無意味な
+ *   状態を作らせない)
+ * - 「キーの発行方法」折りたたみガイド(AI Studioへのリンク)
+ * - 「画像がGoogleに送信される」旨の明示(常時表示、折りたたまない — 安全に関わる
+ *   情報を追加の操作なしに読めるようにする)
+ *
+ * APIキー・有効フラグの永続化はApp.tsx側の責務(`src/gemini/settings.ts`)。この
+ * コンポーネントは常に親から渡された値を表示するcontrolledな入力のみを担う。
+ */
+export function GeminiSettingsPanel({ settings, onApiKeyChange, onEnabledChange }: Props) {
+  const [open, setOpen] = useState(false);
+  const [keyVisible, setKeyVisible] = useState(false);
+  const panelId = useId();
+
+  const hasKey = settings.apiKey.trim() !== "";
+
+  return (
+    <section className="gemini-settings" aria-label="Gemini連携">
+      <button
+        type="button"
+        className="gemini-settings-toggle"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {/* 歯車は装飾のみ(aria-hidden)。アクセシブルネームは常に「Gemini連携の設定」の
+            テキストで構成する(WCAG 2.5.3 Label in Name、既存コンポーネント群と同じ方針)。 */}
+        <span aria-hidden="true">⚙</span> Gemini連携の設定
+      </button>
+      {open && (
+        <div id={panelId} className="gemini-settings-panel">
+          <h2 className="gemini-settings-heading">AI読み取り(Gemini)</h2>
+          {/* 安全に関わる明示(オーケストレーター指示)。折りたたまず常時表示する。 */}
+          <p className="gemini-settings-notice">
+            有効にすると、取り込んだレシート写真がGoogleのGemini APIへ送信されます。画像は各自のGoogleアカウントのAPIキーを使って直接送信され、このアプリのサーバーは経由しません。
+          </p>
+          <label className="gemini-settings-field">
+            <span>Gemini APIキー</span>
+            <span className="gemini-settings-key-row">
+              <input
+                type={keyVisible ? "text" : "password"}
+                name="gemini-api-key"
+                autoComplete="off"
+                value={settings.apiKey}
+                onChange={(e) => onApiKeyChange(e.target.value)}
+                aria-label="Gemini APIキー"
+                placeholder="AIza..."
+              />
+              <button type="button" onClick={() => setKeyVisible((v) => !v)}>
+                {keyVisible ? "隠す" : "表示"}
+              </button>
+            </span>
+          </label>
+          <label className="gemini-settings-enabled">
+            <input
+              type="checkbox"
+              checked={settings.enabled}
+              disabled={!hasKey}
+              onChange={(e) => onEnabledChange(e.target.checked)}
+              aria-label="AI読み取り(Gemini)を有効にする"
+            />
+            AI読み取り(Gemini)を使う
+          </label>
+          {!hasKey && <p className="gemini-settings-hint">APIキーを入力すると有効にできます。</p>}
+          <details className="gemini-settings-guide">
+            <summary>キーの発行方法</summary>
+            <p>
+              <a href={AI_STUDIO_KEY_URL} target="_blank" rel="noreferrer">
+                Google AI Studio({AI_STUDIO_KEY_URL})
+              </a>
+              にアクセスし、Googleアカウントでログインして「APIキーを作成」を選ぶと発行できます(無料)。発行したキーをそのまま上の欄に貼り付けてください。
+            </p>
+          </details>
+        </div>
+      )}
+    </section>
+  );
+}

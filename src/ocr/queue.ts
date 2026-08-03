@@ -23,7 +23,10 @@ export type { NormalizedRect } from "../image/sourceImage";
  * すべて「デコード失敗」として扱う。`loadSourceImage`(v1.3)も同じエラー型を
  * 投げるため共通で使う。
  */
-function classifyLoadError(err: unknown): FailureKind {
+// task-26(Gemini連携): `src/gemini/photoJob.ts`も同じ分類を必要とするため、exportして
+// 一次ソースを1箇所に保つ(`STRONG_LABELS`等を`extractTotal.ts`から共有exportした
+// task-25と同じ考え方)。
+export function classifyLoadError(err: unknown): FailureKind {
   if (err instanceof UnsupportedFormatError) return "unsupported-format";
   if (err instanceof ImageTooLargeError) return "image-too-large";
   return "image-decode";

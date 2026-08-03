@@ -28,6 +28,7 @@ const {
   cancelAllMock,
   disposeMock,
   engineDestroyMock,
+  runGeminiPhotoJobMock,
 } = vi.hoisted(() => ({
   createPpuPaddleEngineMock: vi.fn(),
   createOcrQueueMock: vi.fn(),
@@ -35,6 +36,10 @@ const {
   cancelAllMock: vi.fn(),
   disposeMock: vi.fn(async () => undefined),
   engineDestroyMock: vi.fn(async () => undefined),
+  // task-26(Gemini連携): App.tsxは`./gemini/photoJob`の`runGeminiPhotoJob`を直接
+  // 呼び出す(既存OCRのようなqueue+コールバック登録方式ではない)ため、単純に
+  // `vi.fn()`で差し替えてテストごとにmockResolvedValueOnce等で結果を制御する。
+  runGeminiPhotoJobMock: vi.fn(),
 }));
 
 vi.mock("./ocr/ppuPaddleEngine", () => ({
@@ -43,6 +48,10 @@ vi.mock("./ocr/ppuPaddleEngine", () => ({
 
 vi.mock("./ocr/queue", () => ({
   createOcrQueue: createOcrQueueMock,
+}));
+
+vi.mock("./gemini/photoJob", () => ({
+  runGeminiPhotoJob: runGeminiPhotoJobMock,
 }));
 
 type Cb = {
@@ -118,6 +127,7 @@ describe("App", () => {
     cancelAllMock.mockReset();
     disposeMock.mockReset().mockImplementation(async () => undefined);
     engineDestroyMock.mockClear();
+    runGeminiPhotoJobMock.mockReset();
   });
 
   // @testing-library/reactの自動cleanupはVitestの`globals: true`設定を前提に有効化される。
@@ -1558,5 +1568,123 @@ describe("App", () => {
     });
 
     expect(writeText).toHaveBeenCalledWith(JSON.stringify(diagnostics, null, 2));
+  });
+
+  // task-26(Gemini連携、設計ドキュメント§19)。
+  describe("Gemini連携(オプトイン・各自のAPIキー)", () => {
+    /** 設定パネルを開き、APIキーを入力して有効化する共通ヘルパー。 */
+    function enableGemini(apiKey = "AIzaSyTestKey1234") {
+      fireEvent.click(screen.getByRole("button", { name: /Gemini連携の設定/ }));
+      fireEvent.change(screen.getByLabelText("Gemini APIキー"), { target: { value: apiKey } });
+      fireEvent.click(screen.getByRole("checkbox", { name: /AI読み取り.*(有効|使う)/ }));
+    }
+
+    it("既定(APIキー未設定)では設定パネルは折りたたまれており、写真投入は従来通り内蔵OCRキューへ渡される", () => {
+      const { container } = render(<App />);
+      // 歯車ボタンのみ表示され、パネル自体は閉じている(§19: 控えめな導線)。
+      expect(screen.getByRole("button", { name: /Gemini連携の設定/ })).toBeTruthy();
+      expect(screen.queryByLabelText("Gemini APIキー")).toBeNull();
+
+      const fileInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+      selectFile(fileInput, new File(["dummy"], "receipt.png", { type: "image/png" }));
+
+      expect(enqueueMock).toHaveBeenCalledTimes(1);
+      expect(runGeminiPhotoJobMock).not.toHaveBeenCalled();
+    });
+
+    it("APIキー入力+有効化トグルをオンにすると、以後の写真投入はGemini経由になり内蔵OCRキューへは渡されない", async () => {
+      runGeminiPhotoJobMock.mockResolvedValue({ kind: "success", totals: [1000] });
+      const { container } = render(<App />);
+      enableGemini();
+
+      const fileInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+      selectFile(fileInput, new File(["dummy"], "receipt.png", { type: "image/png" }));
+
+      await vi.waitFor(() => expect(runGeminiPhotoJobMock).toHaveBeenCalledTimes(1));
+      expect(enqueueMock).not.toHaveBeenCalled();
+      const [file, apiKey] = runGeminiPhotoJobMock.mock.calls[0] as [File, string];
+      expect(file.name).toBe("receipt.png");
+      expect(apiKey).toBe("AIzaSyTestKey1234");
+    });
+
+    it("APIキー入力・有効フラグはlocalStorageの別名前空間へ保存される(PersistedStateスキーマとは独立)", () => {
+      render(<App />);
+      enableGemini("my-secret-key");
+      expect(localStorage.getItem("receipt-scanner:gemini:apiKey")).toBe("my-secret-key");
+      expect(localStorage.getItem("receipt-scanner:gemini:enabled")).toBe("1");
+      // 既存のv2永続化データ(people/rows)には一切混入しない
+      const persisted = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+      expect(persisted.geminiApiKey).toBeUndefined();
+      expect(persisted.rows?.some((r: { amountYen?: number }) => r.amountYen === undefined)).toBeFalsy();
+    });
+
+    it("Gemini成功(複数レシート): 1レシート=1行としてneeds-review状態(候補1位=AI回答)で展開される", async () => {
+      runGeminiPhotoJobMock.mockImplementation(
+        async (
+          _file: File,
+          _apiKey: string,
+          callbacks: { onThumbnail(blob: Blob): void; onPreview(blob: Blob): void },
+        ) => {
+          callbacks.onThumbnail(new Blob(["thumb"]));
+          callbacks.onPreview(new Blob(["preview"]));
+          return { kind: "success", totals: [1200, 800] };
+        },
+      );
+      const { container } = render(<App />);
+      enableGemini();
+
+      const fileInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+      selectFile(fileInput, new File(["dummy"], "receipt.png", { type: "image/png" }));
+
+      await vi.waitFor(() => expect(container.querySelectorAll(".receipt-row").length).toBe(2));
+
+      const rows = container.querySelectorAll(".receipt-row");
+      expect(within(rows[0] as HTMLElement).getByRole("button", { name: amountEditLabel("レシート 1") }).textContent).toBe(
+        "1,200円",
+      );
+      expect(within(rows[1] as HTMLElement).getByRole("button", { name: amountEditLabel("レシート 2") }).textContent).toBe(
+        "800円",
+      );
+      // needs-review(誤読を勝手に確定しない安全設計): auto-highではなく要確認バッジになる
+      expect(within(rows[0] as HTMLElement).getByText("要確認")).toBeTruthy();
+      expect(within(rows[1] as HTMLElement).getByText("要確認")).toBeTruthy();
+      // サムネイルも維持される(既存のトリミングなし全体縮小)
+      expect(rows[0].querySelector(".thumb-button")).toBeTruthy();
+      expect(rows[1].querySelector(".thumb-button")).toBeTruthy();
+    });
+
+    it("Gemini呼び出し失敗(レート制限): 通知を表示し内蔵OCRへ自動フォールバックする(その後の結果反映も従来通り機能する)", async () => {
+      runGeminiPhotoJobMock.mockResolvedValue({ kind: "fallback", reason: "rate-limit" });
+      const { container } = render(<App />);
+      enableGemini();
+
+      const fileInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+      selectFile(fileInput, new File(["dummy"], "receipt.png", { type: "image/png" }));
+
+      await vi.waitFor(() => expect(enqueueMock).toHaveBeenCalledTimes(1));
+      expect(screen.getByText(/Geminiの利用上限に達したため、内蔵OCRで読み取ります/)).toBeTruthy();
+
+      // フォールバック後は同じ行idで内蔵OCRキューへ渡されているため、従来通りonResultで確定できる。
+      const [id] = enqueueMock.mock.calls[0] as [string, File];
+      expect(capturedCb).not.toBeNull();
+      act(() => {
+        capturedCb!.onResult(id, { amountYen: 555, status: "auto-high", candidates: [], processing: false });
+      });
+      const amountButton = await screen.findByRole("button", { name: amountEditLabel("レシート 1") });
+      expect(amountButton.textContent).toBe("555円");
+    });
+
+    it("Gemini経路での画像デコード失敗: フォールバックせずfailureKind付きでfailed確定する", async () => {
+      runGeminiPhotoJobMock.mockResolvedValue({ kind: "load-error", failureKind: "unsupported-format" });
+      const { container } = render(<App />);
+      enableGemini();
+
+      const fileInput = container.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+      selectFile(fileInput, new File(["dummy"], "receipt.bmp", { type: "image/bmp" }));
+
+      await vi.waitFor(() => expect(screen.getByText("この画像形式には対応していません")).toBeTruthy());
+      // デコード失敗は内蔵OCRでも同じ結果になるだけなのでフォールバックしない
+      expect(enqueueMock).not.toHaveBeenCalled();
+    });
   });
 });
